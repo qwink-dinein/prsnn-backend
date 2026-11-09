@@ -1,90 +1,115 @@
-
-
 import User from '../models/User.js';
+import Booking from '../models/Booking.js';
+import { applyLock, escapeRegex, matchesSeeGender } from '../utils/privacy.js';
 
 /**
- * In-memory cache for companion listings.
+ * In-memory cache for the verified-companion listing (unfiltered).
  *
- * Keyed by page+limit: a single shared slot meant the first caller's page size
- * was served to everyone.
+ * Viewer-specific rules (gender preference, locked photos) are applied AFTER
+ * the cache, per request, so one viewer's view can never leak to another.
  *
  * NOTE: this is per-process. With more than one server instance the caches
- * diverge and users see different listings depending on which instance answers.
- * Move to Redis before scaling out (see prssn-document R14).
+ * diverge. Move to Redis before scaling out (see prssn-document R14).
  */
 const companionsCache = new Map();
 const CACHE_DURATION = 60 * 1000; // 1 minute
 
 /**
- * Drop cached companion listings.
- *
- * Must be called by anything that changes who appears in the list or what they
- * look like: verification decisions, companion onboarding, profile edits and
- * account deletion. Without this a newly approved companion stays invisible
- * until the entry expires.
+ * Drop cached companion listings. Call on anything that changes who appears in
+ * the list or what they look like (verification, onboarding, profile edits,
+ * privacy changes, deletion).
  */
 export const invalidateCompanionsCache = () => {
     companionsCache.clear();
 };
 
+const FIELDS = 'username profilePhotoUrl fullName description pricePerHour city area state tags availability startTime endTime gender profileVisibility';
+
+/** Public shape used by web and app. Keeps the legacy snake_case keys the website reads. */
+export function toPublicCompanion(f) {
+    return {
+        id: f._id,
+        userId: f._id,
+        username: f.username,
+        profilePhoto: f.profilePhotoUrl,
+        fullName: f.fullName,
+        description: f.description,
+        pricePerHour: f.pricePerHour,
+        city: f.city,
+        area: f.area,
+        state: f.state,
+        gender: f.gender,
+        tags: f.tags || [],
+        availability: f.availability,
+        monday_availability: f.availability?.monday,
+        tuesday_availability: f.availability?.tuesday,
+        wednesday_availability: f.availability?.wednesday,
+        thursday_availability: f.availability?.thursday,
+        friday_availability: f.availability?.friday,
+        saturday_availability: f.availability?.saturday,
+        sunday_availability: f.availability?.sunday,
+        start_time: f.startTime,
+        end_time: f.endTime,
+        startTime: f.startTime,
+        endTime: f.endTime,
+    };
+}
+
+/** The viewer's gender preference: their saved choice, or ?see= for logged-out browsing. */
+async function viewerOf(req) {
+    if (req.user?.id) {
+        const me = await User.findById(req.user.id).select('seeGender').lean();
+        if (me) return { id: String(req.user.id), seeGender: me.seeGender };
+    }
+    const see = typeof req.query.see === 'string' ? req.query.see : undefined;
+    return { id: null, seeGender: see };
+}
+
+/** Companions this viewer has a confirmed, paid booking with: their photos are unlocked. */
+async function unlockedFor(viewerId) {
+    if (!viewerId) return new Set();
+    const rows = await Booking.find({ requesterId: viewerId, status: { $in: ['accepted', 'completed'] }, paymentStatus: 'paid' })
+        .select('companionId')
+        .lean();
+    return new Set(rows.map((r) => String(r.companionId)));
+}
+
+function viewFor(list, viewer, unlocked) {
+    return list
+        .filter((c) => String(c._id) !== viewer.id)
+        .filter((c) => matchesSeeGender(viewer.seeGender, c.gender))
+        .map((c) => applyLock(toPublicCompanion(c), c, { unlocked: unlocked.has(String(c._id)) }));
+}
+
 /**
- * Fetch all verified companions with pagination and caching
+ * GET /api/companions — verified companions, filtered for the viewer.
  */
 export const getAllCompanions = async (req, res) => {
     try {
-        // Pagination support (optional, for future use)
         const page = parseInt(req.query.page) || 1;
-        const limit = parseInt(req.query.limit) || 100; // Default to 100, but allow override
+        const limit = Math.min(parseInt(req.query.limit) || 100, 200);
         const skip = (page - 1) * limit;
+        const cityFilter = typeof req.query.city === 'string' && req.query.city.trim() ? req.query.city.trim().toLowerCase() : null;
 
-        // Check cache first — scoped to this exact page/limit combination
         const cacheKey = `${page}:${limit}`;
         const now = Date.now();
-        const cached = companionsCache.get(cacheKey);
-        if (cached && (now - cached.timestamp) < CACHE_DURATION) {
-            return res.status(200).json(cached.data);
+        let rows = companionsCache.get(cacheKey);
+        if (!rows || now - rows.timestamp >= CACHE_DURATION) {
+            const data = await User.find({ role: 'companion', verificationStatus: 'verified' })
+                .select(FIELDS)
+                .sort({ createdAt: -1 })
+                .skip(skip)
+                .limit(limit)
+                .lean();
+            rows = { data, timestamp: now };
+            companionsCache.set(cacheKey, rows);
         }
 
-        // Optimized query with lean() for faster results
-        const companions = await User.find({ 
-            role: 'companion', 
-            verificationStatus: 'verified' 
-        })
-        .select('username email profilePhotoUrl fullName description pricePerHour city area tags availability startTime endTime')
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .lean(); // Convert to plain JavaScript objects for better performance
-        
-        // Map to frontend structure
-        const mapped = companions.map(f => ({
-            id: f._id,
-            userId: f._id,
-            username: f.username,
-            email: f.email,
-            profilePhoto: f.profilePhotoUrl,
-            fullName: f.fullName,
-            description: f.description,
-            pricePerHour: f.pricePerHour,
-            city: f.city,
-            area: f.area,
-            tags: f.tags || [],
-            availability: f.availability,
-            monday_availability: f.availability?.monday,
-            tuesday_availability: f.availability?.tuesday,
-            wednesday_availability: f.availability?.wednesday,
-            thursday_availability: f.availability?.thursday,
-            friday_availability: f.availability?.friday,
-            saturday_availability: f.availability?.saturday,
-            sunday_availability: f.availability?.sunday,
-            start_time: f.startTime,
-            end_time: f.endTime
-        }));
-
-        // Update cache
-        companionsCache.set(cacheKey, { data: mapped, timestamp: now });
-
-        res.status(200).json(mapped);
+        const viewer = await viewerOf(req);
+        const unlocked = await unlockedFor(viewer.id);
+        let list = viewFor(rows.data, viewer, unlocked);
+        if (cityFilter) list = list.filter((c) => (c.city || '').toLowerCase() === cityFilter);
+        res.status(200).json(list);
     } catch (error) {
         console.error('Error fetching companions:', error);
         res.status(500).json({ message: 'Server error fetching companions' });
@@ -92,36 +117,22 @@ export const getAllCompanions = async (req, res) => {
 };
 
 /**
- * Fetch a specific companion by ID
+ * GET /api/companions/:id
  */
 export const getCompanionById = async (req, res) => {
     try {
-        const { id } = req.params;
-        
-        const user = await User.findById(id)
-            .select('username email profilePhotoUrl fullName description pricePerHour city area tags availability startTime endTime verificationStatus role')
-            .lean();
-
+        const user = await User.findById(req.params.id).select(`${FIELDS} verificationStatus role`).lean();
         if (!user || user.role !== 'companion' || user.verificationStatus !== 'verified') {
             return res.status(404).json({ message: 'Companion not found or not verified' });
         }
-        
-        res.status(200).json({
-            ...user,
-            id: user._id,
-            userId: user._id,
-            profilePhoto: user.profilePhotoUrl,
-            monday_availability: user.availability?.monday,
-            tuesday_availability: user.availability?.tuesday,
-            wednesday_availability: user.availability?.wednesday,
-            thursday_availability: user.availability?.thursday,
-            friday_availability: user.availability?.friday,
-            saturday_availability: user.availability?.saturday,
-            sunday_availability: user.availability?.sunday,
-            start_time: user.startTime,
-            end_time: user.endTime,
-            price_per_hour: user.pricePerHour
-        });
+        const viewer = await viewerOf(req);
+        // A direct link still respects the viewer's gender preference.
+        if (String(user._id) !== viewer.id && !matchesSeeGender(viewer.seeGender, user.gender)) {
+            return res.status(404).json({ message: 'Companion not found or not verified' });
+        }
+        const unlocked = String(user._id) === viewer.id || (await unlockedFor(viewer.id)).has(String(user._id));
+        const out = applyLock(toPublicCompanion(user), user, { unlocked });
+        res.status(200).json({ ...out, price_per_hour: out.pricePerHour });
     } catch (error) {
         console.error('Error fetching companion:', error);
         res.status(500).json({ message: 'Server error fetching companion' });
@@ -129,29 +140,24 @@ export const getCompanionById = async (req, res) => {
 };
 
 /**
- * Search companions by name or description
+ * GET /api/companions/search/:query — name, description or tags.
+ * User text is escaped before it becomes a RegExp.
  */
 export const searchCompanions = async (req, res) => {
     try {
-        const { query } = req.params;
-        const regex = new RegExp(query, 'i');
-
+        const regex = new RegExp(escapeRegex(req.params.query), 'i');
         const companions = await User.find({
             role: 'companion',
             verificationStatus: 'verified',
-            $or: [
-                { fullName: regex },
-                { username: regex },
-                { description: regex },
-                { tags: regex }
-            ]
+            $or: [{ fullName: regex }, { username: regex }, { description: regex }, { tags: regex }, { area: regex }, { city: regex }],
         })
-        .select('username email profilePhotoUrl fullName description pricePerHour city area tags availability startTime endTime')
-        .sort({ createdAt: -1 })
-        .limit(50) // Limit search results to 50
-        .lean();
-
-        res.status(200).json(companions);
+            .select(FIELDS)
+            .sort({ createdAt: -1 })
+            .limit(50)
+            .lean();
+        const viewer = await viewerOf(req);
+        const unlocked = await unlockedFor(viewer.id);
+        res.status(200).json(viewFor(companions, viewer, unlocked));
     } catch (error) {
         console.error('Error searching companions:', error);
         res.status(500).json({ message: 'Server error searching companions' });

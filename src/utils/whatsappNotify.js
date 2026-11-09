@@ -24,6 +24,8 @@ export const TEMPLATE_ENV = {
   booking_request: 'WAPLIFY_TPL_BOOKING_REQUEST',
   booking_accepted: 'WAPLIFY_TPL_BOOKING_ACCEPTED',
   payment_received: 'WAPLIFY_TPL_PAYMENT_RECEIVED',
+  booking_confirmed: 'WAPLIFY_TPL_BOOKING_CONFIRMED',
+  booking_unfulfilled: 'WAPLIFY_TPL_BOOKING_UNFULFILLED',
 };
 
 /** Verified login number first; else the number the person typed on their own profile. */
@@ -90,6 +92,24 @@ export const bodyFor = {
     brandName(),
     dateText(booking.scheduledDate),
     timeText(booking.startTime),
+    refOf(booking),
+  ],
+  // Hello {{1}}, your booking on {{2}} is confirmed with {{3}}. {{4}} date, {{5}} time, {{6}} ref
+  booking_confirmed: ({ booking, requester, companion }) => [
+    firstName(requester),
+    brandName(),
+    firstName(companion, 'your companion'),
+    dateText(booking.scheduledDate),
+    timeText(booking.startTime),
+    refOf(booking),
+  ],
+  // Hello {{1}}, we could not find an available companion for your booking on {{2}}. {{3}} date, {{4}} time, ₹{{5}} refund, {{6}} ref
+  booking_unfulfilled: ({ booking, requester, amount }) => [
+    firstName(requester),
+    brandName(),
+    dateText(booking.scheduledDate),
+    timeText(booking.startTime),
+    rupeesText(amount),
     refOf(booking),
   ],
 };

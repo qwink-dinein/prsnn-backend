@@ -14,6 +14,7 @@ import bookingRoutes from "./routes/booking.routes.js";
 import paymentRoutes from "./routes/payment.routes.js";
 import notificationRoutes from "./routes/notification.routes.js";
 import publicRoutes from "./routes/public.routes.js";
+import { razorpayWebhook } from "./controllers/payment.controller.js";
 
 const app = express();
 
@@ -56,6 +57,10 @@ app.use(cors({
 }));
 
 app.use(helmet());
+
+// Razorpay webhook needs the exact raw body for its signature, so it is
+// mounted before express.json().
+app.post("/api/payments/webhook", express.raw({ type: "application/json", limit: "1mb" }), razorpayWebhook);
 // Add compression middleware to reduce response sizes
 app.use(compression());
 app.use(express.json());

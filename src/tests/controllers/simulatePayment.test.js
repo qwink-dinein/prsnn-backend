@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-vi.mock('../../models/Booking.js', () => ({ default: { findById: vi.fn() } }));
+vi.mock('../../models/Booking.js', () => ({ default: { findById: vi.fn(), findOneAndUpdate: vi.fn() } }));
 vi.mock('../../models/User.js', () => ({ default: { findById: vi.fn().mockResolvedValue({ fullName: 'Ayesha', phone: '919876543210' }) } }));
 vi.mock('../../models/Notification.js', () => ({ default: { create: vi.fn() } }));
 vi.mock('../../utils/whatsappNotify.js', () => ({ notifyWhatsAppLater: vi.fn() }));
@@ -42,10 +42,11 @@ describe('simulated payments', () => {
   it('marks the booking paid, notifies the companion in app and on WhatsApp', async () => {
     const b = mkBooking();
     Booking.findById.mockResolvedValue(b);
+    Booking.findOneAndUpdate.mockImplementation(async (_f, u) => ({ ...b, ...u.$set }));
     const res = mkRes();
     await simulatePayment({ body: { bookingId: 'b1' }, user: { id: 'u1' } }, res);
     expect(res.status).toHaveBeenCalledWith(200);
-    expect(b).toMatchObject({ paymentStatus: 'paid', paymentMode: 'simulated', amountPaid: 900 });
+    expect(Booking.findOneAndUpdate.mock.calls[0][1].$set).toMatchObject({ paymentStatus: 'paid', paymentMode: 'simulated', amountPaid: 900 });
     expect(Notification.create).toHaveBeenCalledWith(expect.objectContaining({ userId: 'c1', type: 'payment_completed' }));
     expect(notifyWhatsAppLater).toHaveBeenCalledWith('payment_received', expect.anything(), expect.objectContaining({ amount: 900 }));
   });

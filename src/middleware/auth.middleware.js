@@ -30,3 +30,21 @@ export const requireRole = (...roles) => (req, res, next) => {
   }
   next();
 };
+
+/**
+ * Like authMiddleware, but a missing or bad token is not an error: req.user
+ * stays undefined. For public endpoints whose answer depends on who is asking
+ * (e.g. companions filtered by the viewer's gender preference).
+ */
+export const optionalAuth = (req, res, next) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return next();
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = decoded;
+    if (decoded.userId && !decoded.id) req.user.id = decoded.userId;
+  } catch {
+    // ignore: treated as logged out
+  }
+  next();
+};

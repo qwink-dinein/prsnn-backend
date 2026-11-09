@@ -2,3 +2,4 @@ allowBuilds:
   bcrypt: true
   core-js: false
   lint: false
+  mongodb-memory-server: set this to true or false

@@ -5,6 +5,50 @@ import Notification from '../models/Notification.js';
 import Message from '../models/Message.js';
 import { maskPhoneNumber } from '../utils/maskPhoneNumber.js';
 import { notifyWhatsAppLater } from '../utils/whatsappNotify.js';
+import { applyLock } from '../utils/privacy.js';
+import { cancelPrepaid } from './prepaid.controller.js';
+
+const PERSON_FIELDS = 'fullName profilePhotoUrl pricePerHour profileVisibility';
+
+/** A person's public bits as the other party sees them (photo hidden while locked). */
+function personView(p, unlocked) {
+    if (!p || typeof p !== 'object' || !p._id) return p;
+    const base = { _id: p._id, fullName: p.fullName, profilePhotoUrl: p.profilePhotoUrl, pricePerHour: p.pricePerHour, phoneNumber: undefined };
+    const locked = applyLock({ fullName: base.fullName, profilePhoto: base.profilePhotoUrl }, p, { unlocked });
+    return { ...base, fullName: locked.fullName, profilePhotoUrl: locked.profilePhoto ?? undefined, locked: locked.locked };
+}
+
+/** Confirmed and paid between these two people: each can see the other. */
+const confirmedPaid = (b) => ['accepted', 'completed'].includes(b.status) && b.paymentStatus === 'paid';
+
+/**
+ * Booking as one participant sees it. Prepaid offers to other companions are
+ * never revealed to the customer (only how many were tried and the current
+ * deadline); a companion only sees their own offer.
+ */
+export function bookingView(b, viewerId) {
+    const o = typeof b.toObject === 'function' ? b.toObject() : { ...b };
+    const me = String(viewerId);
+    const unlocked = confirmedPaid(o);
+    o.requesterId = personView(o.requesterId, unlocked);
+    o.companionId = personView(o.companionId, unlocked);
+    o.preferredCompanionId = personView(o.preferredCompanionId, unlocked);
+    if (o.flow === 'prepaid') {
+        const offers = o.offers || [];
+        const live = offers.find((x) => x.status === 'offered');
+        const requesterId = String(o.requesterId?._id ?? o.requesterId);
+        if (requesterId === me) {
+            o.offerSummary = { tried: offers.length, liveUntil: live?.expiresAt ?? null };
+        } else {
+            const mine = offers.find((x) => String(x.companionId?._id ?? x.companionId) === me);
+            o.myOffer = mine ? { status: mine.status, expiresAt: mine.expiresAt, offeredAt: mine.offeredAt } : null;
+        }
+        delete o.offers;
+        delete o.idempotencyKey;
+    }
+    delete o.razorpaySignature;
+    return o;
+}
 
 export const createBooking = async (req, res) => {
     try {
@@ -103,10 +147,11 @@ export const getUserBookings = async (req, res) => {
         const userId = req.user.id;
         // Find bookings where user is requester
         const bookings = await Booking.find({ requesterId: userId })
-            .populate('companionId', 'fullName profilePhotoUrl pricePerHour')
+            .populate('companionId', PERSON_FIELDS)
+            .populate('preferredCompanionId', PERSON_FIELDS)
             .sort({ createdAt: -1 });
-        
-        res.status(200).json(bookings);
+
+        res.status(200).json(bookings.map((b) => bookingView(b, userId)));
     } catch (error) {
         console.error("Get User Bookings Error:", error);
         res.status(500).json({ message: "Failed to fetch bookings." });
@@ -117,11 +162,16 @@ export const getCompanionBookings = async (req, res) => {
     try {
         const userId = req.user.id;
         // Find bookings where user is companion (receiver)
-        const bookings = await Booking.find({ companionId: userId })
-            .populate('requesterId', 'fullName profilePhotoUrl phoneNumber')
+        // Request-flow bookings addressed to me, prepaid bookings assigned to me,
+        // and prepaid offers made to me (live, answered or expired).
+        const bookings = await Booking.find({
+            $or: [{ companionId: userId }, { flow: 'prepaid', 'offers.companionId': userId }],
+            $nor: [{ flow: 'prepaid', 'allocation.state': 'awaiting_payment' }],
+        })
+            .populate('requesterId', PERSON_FIELDS)
             .sort({ createdAt: -1 });
 
-        res.status(200).json(bookings);
+        res.status(200).json(bookings.map((b) => bookingView(b, userId)));
     } catch (error) {
         console.error("Get Companion Bookings Error:", error);
         res.status(500).json({ message: "Failed to fetch bookings." });
@@ -139,8 +189,20 @@ export const updateBookingStatus = async (req, res) => {
             return res.status(404).json({ message: "Booking not found." });
         }
 
+        if (booking.flow === 'prepaid') {
+            // Prepaid: accept/decline go through the offer endpoints; cancelling
+            // follows the refund policy. Only "completed" is set here.
+            if (status === 'cancelled' || status === 'rejected') {
+                const r = await cancelPrepaid(booking, userId);
+                return res.status(r.code).json({ message: r.message, booking: r.booking });
+            }
+            if (status !== 'completed') {
+                return res.status(400).json({ message: "Use the offer buttons to accept or decline this booking." });
+            }
+        }
+
         // Verify that the user is the companion for this booking
-        if (booking.companionId.toString() !== userId.toString()) {
+        if (!booking.companionId || booking.companionId.toString() !== userId.toString()) {
             return res.status(403).json({ message: "Not authorized to update this booking." });
         }
 
@@ -189,22 +251,24 @@ export const getBookingById = async (req, res) => {
         const userId = req.user.id;
 
         const booking = await Booking.findById(id)
-            .populate('requesterId', 'fullName profilePhotoUrl')
-            .populate('companionId', 'fullName profilePhotoUrl');
+            .populate('requesterId', PERSON_FIELDS)
+            .populate('companionId', PERSON_FIELDS)
+            .populate('preferredCompanionId', PERSON_FIELDS);
 
         if (!booking) {
             return res.status(404).json({ message: "Booking not found." });
         }
 
         const requesterIdStr = (booking.requesterId?._id || booking.requesterId).toString();
-        const companionIdStr = (booking.companionId?._id || booking.companionId).toString();
-        const isParticipant = requesterIdStr === userId.toString() || companionIdStr === userId.toString();
+        const companionIdStr = booking.companionId ? (booking.companionId?._id || booking.companionId).toString() : '';
+        const offeredTo = (booking.offers || []).some((o) => String(o.companionId) === userId.toString());
+        const isParticipant = requesterIdStr === userId.toString() || companionIdStr === userId.toString() || offeredTo;
 
         if (!isParticipant) {
             return res.status(403).json({ message: "Not authorized to view this booking." });
         }
 
-        res.status(200).json(booking);
+        res.status(200).json(bookingView(booking, userId));
     } catch (error) {
         console.error("Get Booking Error:", error);
         res.status(500).json({ message: "Failed to fetch booking details." });
@@ -226,7 +290,7 @@ export const getBookingMessages = async (req, res) => {
 
         const isParticipant =
             booking.requesterId.toString() === userId.toString() ||
-            booking.companionId.toString() === userId.toString();
+            String(booking.companionId ?? "") === userId.toString();
 
         if (!isParticipant) {
             return res.status(403).json({ message: "Not authorized to view this chat." });
@@ -234,7 +298,7 @@ export const getBookingMessages = async (req, res) => {
 
         // Same paywall as the socket join — otherwise chat history is readable
         // over HTTP even when the socket refuses the room.
-        const isCompanion = booking.companionId.toString() === userId.toString();
+        const isCompanion = String(booking.companionId ?? "") === userId.toString();
         if (!isCompanion && booking.paymentStatus !== 'paid') {
             return res.status(403).json({ message: "Payment is required before entering this session." });
         }
@@ -279,9 +343,14 @@ export const cancelBooking = async (req, res) => {
             return res.status(404).json({ message: "Booking not found." });
         }
         
-        const isCompanion = booking.companionId.toString() === userId.toString();
+        if (booking.flow === 'prepaid') {
+            const r = await cancelPrepaid(booking, userId);
+            return res.status(r.code).json({ message: r.message, booking: r.booking, refund: r.refund });
+        }
+
+        const isCompanion = String(booking.companionId ?? "") === userId.toString();
         const isRequester = booking.requesterId.toString() === userId.toString();
-        
+
         if (!isCompanion && !isRequester) {
             return res.status(403).json({ message: "Not authorized to cancel this session." });
         }

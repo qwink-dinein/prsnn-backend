@@ -84,6 +84,17 @@ const UserSchema = new mongoose.Schema({
         type: Date
     },
     
+    // Identity, matching and privacy (mobile app)
+    state: { type: String },
+    gender: { type: String, enum: ['woman', 'man', 'nonbinary'] },
+    // Which companions this person wants to see. Server-enforced in listings.
+    seeGender: { type: String, enum: ['woman', 'man', 'nonbinary', 'everyone'] },
+    // 'locked' = photo replaced by a blurred placeholder for everyone except people
+    // with a confirmed, paid booking together. Unset on older accounts = 'open'.
+    profileVisibility: { type: String, enum: ['open', 'locked'] },
+    // When the person explicitly agreed to the visibility above (consent record).
+    visibilityConsentAt: { type: Date },
+
     // Companion-Specific Fields
     description: String,
     pricePerHour: Number,
@@ -114,6 +125,7 @@ const UserSchema = new mongoose.Schema({
 // Add indexes for better query performance
 UserSchema.index({ role: 1, verificationStatus: 1, createdAt: -1 }); // For fetching verified companions efficiently with sort
 UserSchema.index({ city: 1 }); // For city-based filtering
+UserSchema.index({ role: 1, verificationStatus: 1, gender: 1, city: 1 }); // Matching for prepaid offers
 UserSchema.index({ tags: 1 }); // For tag-based filtering
 // Unique only where present: phone-OTP accounts have no email. Requires migratePhoneAuth.js once
 // on existing databases (drops the old non-partial email_1 index, which treats missing as null).

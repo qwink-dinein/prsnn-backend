@@ -1,10 +1,11 @@
 
-import Razorpay from 'razorpay';
+import { getRazorpay, amountDueInPaise, paymentMode } from '../utils/razorpay.js';
 import crypto from 'crypto';
 import Booking from '../models/Booking.js';
 import User from '../models/User.js';
 import Notification from '../models/Notification.js';
 import { notifyWhatsAppLater } from '../utils/whatsappNotify.js';
+import { onPrepaidPaid } from '../services/allocation.js';
 
 /**
  * PAYMENT_MODE=simulated turns on a test checkout for the mobile app: no
@@ -12,55 +13,61 @@ import { notifyWhatsAppLater } from '../utils/whatsappNotify.js';
  * paymentMode 'simulated'. Use it on the TESTING service only — the website
  * still needs Razorpay order ids, so production keeps the default 'razorpay'.
  */
-export const paymentMode = () => (process.env.PAYMENT_MODE === 'simulated' ? 'simulated' : 'razorpay');
+export { paymentMode };
 
-/** Shared by real and simulated payments: mark paid, tell the companion (in app + WhatsApp). */
-async function markPaid(booking, { paymentId, signature, amountRupees, mode }) {
-    booking.paymentStatus = 'paid';
-    booking.paymentMode = mode;
-    booking.razorpayPaymentId = paymentId;
-    if (signature) booking.razorpaySignature = signature;
-    booking.amountPaid = amountRupees;
-    await booking.save();
-
-    const refId = booking._id.toString().slice(-6).toUpperCase();
-    await Notification.create({
-        userId: booking.companionId,
-        type: 'payment_completed',
-        message: `Payment received for booking #${refId}. Chat is now open.`
-    });
-
-    const [requester, companion] = await Promise.all([User.findById(booking.requesterId), User.findById(booking.companionId)]);
-    if (companion) notifyWhatsAppLater('payment_received', companion, { booking, requester, companion, amount: amountRupees });
+/**
+ * Why this booking can't be paid right now, or null.
+ * Request flow (website): only after the companion accepted.
+ * Prepaid flow (app): only while awaiting payment (before the payment window lapses).
+ */
+export function payableError(booking) {
+    if (booking.paymentStatus === 'paid') return null; // handled as idempotent success by callers
+    if (booking.flow === 'prepaid') {
+        if (booking.allocation?.state !== 'awaiting_payment') return "This booking can no longer be paid. Please start a new booking.";
+        return null;
+    }
+    if (booking.status !== 'accepted') return "Booking must be accepted before payment.";
+    return null;
 }
 
 /**
- * Razorpay client, built on first use.
- *
- * Constructing at module scope meant a missing RAZORPAY_KEY_ID threw during
- * import, which failed app.js and stopped the entire API from booting. Building
- * it lazily confines a misconfiguration to the payment routes.
+ * Shared by verify, webhook and simulated payments. Atomic: only the first
+ * caller flips the booking to paid (a verify racing the webhook can't double
+ * count). Prepaid bookings then start companion allocation.
+ * @returns {Promise<{ booking, alreadyPaid: boolean }>}
  */
-let razorpayClient = null;
-const getRazorpay = () => {
-    if (!razorpayClient) {
-        const { RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET } = process.env;
-        if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) {
-            throw new Error('Razorpay is not configured on this server.');
-        }
-        razorpayClient = new Razorpay({
-            key_id: RAZORPAY_KEY_ID,
-            key_secret: RAZORPAY_KEY_SECRET,
-        });
-    }
-    return razorpayClient;
-};
+export async function markPaid(bookingId, { paymentId, signature, amountRupees, mode }) {
+    const updated = await Booking.findOneAndUpdate(
+        { _id: bookingId, paymentStatus: { $ne: 'paid' } },
+        {
+            $set: {
+                paymentStatus: 'paid',
+                paymentMode: mode,
+                razorpayPaymentId: paymentId,
+                ...(signature ? { razorpaySignature: signature } : {}),
+                amountPaid: amountRupees,
+                paidAt: new Date(),
+            },
+        },
+        { new: true }
+    );
+    if (!updated) return { booking: await Booking.findById(bookingId), alreadyPaid: true };
 
-/** Amount owed for a booking, in paise. Single source of truth. */
-const amountDueInPaise = (booking) => {
-    const hours = (parseInt(booking.duration, 10) || 60) / 60;
-    return Math.round(booking.pricePerHour * hours * 100);
-};
+    if (updated.flow === 'prepaid') {
+        const after = await onPrepaidPaid(updated._id);
+        return { booking: after ?? updated, alreadyPaid: false };
+    }
+
+    const refId = updated._id.toString().slice(-6).toUpperCase();
+    await Notification.create({
+        userId: updated.companionId,
+        type: 'payment_completed',
+        message: `Payment received for booking #${refId}. Chat is now open.`
+    });
+    const [requester, companion] = await Promise.all([User.findById(updated.requesterId), User.findById(updated.companionId)]);
+    if (companion) notifyWhatsAppLater('payment_received', companion, { booking: updated, requester, companion, amount: amountRupees });
+    return { booking: updated, alreadyPaid: false };
+}
 
 export const createPaymentIntent = async (req, res) => {
     try {
@@ -78,13 +85,11 @@ export const createPaymentIntent = async (req, res) => {
             return res.status(403).json({ message: "Unauthorized to pay for this booking." });
         }
 
-        if (booking.status !== 'accepted') {
-            return res.status(400).json({ message: "Booking must be accepted before payment." });
-        }
-
         if (booking.paymentStatus === 'paid') {
             return res.status(400).json({ message: "Booking is already paid." });
         }
+        const notPayable = payableError(booking);
+        if (notPayable) return res.status(400).json({ message: notPayable });
 
         // Calculate amount (duration stored as minutes string)
         const amountInPaise = amountDueInPaise(booking);
@@ -220,9 +225,9 @@ export const verifyPayment = async (req, res) => {
             return res.status(400).json({ message: "Amount paid is less than the amount due." });
         }
 
-        await markPaid(booking, { paymentId: razorpayPaymentId, signature: razorpaySignature, amountRupees: payment.amount / 100, mode: 'razorpay' });
+        const result = await markPaid(booking._id, { paymentId: razorpayPaymentId, signature: razorpaySignature, amountRupees: payment.amount / 100, mode: 'razorpay' });
 
-        res.status(200).json({ message: "Payment verified successfully.", booking });
+        res.status(200).json({ message: "Payment verified successfully.", booking: result.booking });
 
     } catch (error) {
         console.error("Verify Payment Error:", error);
@@ -247,23 +252,67 @@ export const simulatePayment = async (req, res) => {
         if (booking.requesterId.toString() !== req.user.id.toString()) {
             return res.status(403).json({ message: "Unauthorized to pay for this booking." });
         }
-        if (booking.status !== 'accepted') {
-            return res.status(400).json({ message: "Booking must be accepted before payment." });
-        }
         if (booking.paymentStatus === 'paid') {
             return res.status(200).json({ message: "Payment already completed.", booking });
         }
+        const notPayable = payableError(booking);
+        if (notPayable) return res.status(400).json({ message: notPayable });
         if (outcome === 'failure') {
             return res.status(402).json({ message: "Test payment declined. No money was taken." });
         }
-        await markPaid(booking, {
-            paymentId: `sim_pay_${Date.now()}`,
+        const result = await markPaid(booking._id, {
+            paymentId: `sim_pay_${booking._id}`,
             amountRupees: amountDueInPaise(booking) / 100,
             mode: 'simulated'
         });
-        res.status(200).json({ message: "Test payment successful.", booking });
+        res.status(200).json({ message: "Test payment successful.", booking: result.booking });
     } catch (error) {
         console.error("Simulate Payment Error:", error.message);
         res.status(500).json({ message: "Failed to complete test payment." });
+    }
+};
+
+/**
+ * POST /api/payments/webhook — Razorpay server-to-server events.
+ * Mounted with express.raw() in app.js: the signature is an HMAC of the exact
+ * raw body with RAZORPAY_WEBHOOK_SECRET (X-Razorpay-Signature). This is the
+ * source of truth when the app closes before it can call verify-payment.
+ *   payment.captured  → booking paid (amount checked) → allocation starts
+ *   refund.processed  → refund marked processed
+ * Always idempotent; unknown events are acknowledged.
+ */
+export const razorpayWebhook = async (req, res) => {
+    try {
+        const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
+        if (!secret) return res.status(503).json({ message: 'Webhook not configured.' });
+        const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.from(typeof req.body === 'string' ? req.body : JSON.stringify(req.body || {}));
+        const expected = crypto.createHmac('sha256', secret).update(raw).digest('hex');
+        const given = String(req.headers['x-razorpay-signature'] || '');
+        const ok = given.length === expected.length && crypto.timingSafeEqual(Buffer.from(given), Buffer.from(expected));
+        if (!ok) return res.status(400).json({ message: 'Invalid signature.' });
+
+        const event = JSON.parse(raw.toString('utf8'));
+        if (event.event === 'payment.captured') {
+            const p = event.payload?.payment?.entity;
+            if (p?.order_id) {
+                const booking = await Booking.findOne({ razorpayOrderId: p.order_id });
+                if (booking && booking.paymentStatus !== 'paid') {
+                    if (p.amount >= amountDueInPaise(booking)) {
+                        await markPaid(booking._id, { paymentId: p.id, amountRupees: p.amount / 100, mode: 'razorpay' });
+                    } else {
+                        console.error(`Webhook underpayment on booking ${booking._id}: ${p.amount} < ${amountDueInPaise(booking)}`);
+                    }
+                }
+            }
+        } else if (event.event === 'refund.processed') {
+            const r = event.payload?.refund?.entity;
+            if (r?.id) {
+                await Booking.updateOne({ 'refund.providerRefundId': r.id }, { $set: { 'refund.status': 'processed', 'refund.processedAt': new Date() } });
+            }
+        }
+        res.status(200).json({ ok: true });
+    } catch (error) {
+        console.error('Razorpay webhook error:', error.message);
+        res.status(500).json({ message: 'Webhook processing failed.' });
     }
 };

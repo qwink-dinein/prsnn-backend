@@ -5,6 +5,7 @@ import connectMongo from "./src/config/mongo.js";
 
 import http from 'http';
 import initializeSocket from "./src/socket/index.js";
+import { startAllocationWorker } from "./src/services/allocation.js";
 
 const PORT = process.env.PORT || 5000;
 
@@ -42,6 +43,9 @@ connectMongo().then(() => {
   
   // Initialize Socket.io
   initializeSocket(server);
+
+  // Prepaid bookings: expire offers, offer the next companion, refund unfilled bookings.
+  startAllocationWorker();
 
   server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);

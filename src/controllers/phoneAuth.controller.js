@@ -39,6 +39,10 @@ export function sessionUser(user) {
     profilePhoto: user.profilePhotoUrl,
     phone: user.phone,
     hasPin: !!user.pinHash,
+    gender: user.gender,
+    seeGender: user.seeGender,
+    profileVisibility: user.profileVisibility,
+    city: user.city,
   };
 }
 

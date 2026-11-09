@@ -1,31 +1,53 @@
 
 import mongoose from 'mongoose';
 
+/**
+ * Two booking flows share this model:
+ *
+ *   flow 'request' (website, unchanged): request → companion accepts → pay.
+ *   flow 'prepaid' (mobile app): pay first → offers go to up to 3 eligible
+ *     companions one at a time → the first to accept is assigned atomically
+ *     → if nobody accepts in time, cancelled and refunded.
+ *
+ * Booking state (`status` + `allocation.state`) and payment state
+ * (`paymentStatus` + `refund`) are stored separately.
+ */
+
+const OfferSchema = new mongoose.Schema({
+    companionId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    // offered → accepted | declined | expired | withdrawn (another companion won, or the booking ended)
+    status: { type: String, enum: ['offered', 'accepted', 'declined', 'expired', 'withdrawn'], default: 'offered' },
+    offeredAt: { type: Date, default: Date.now },
+    expiresAt: { type: Date, required: true },
+    respondedAt: { type: Date },
+}, { _id: true });
+
 const BookingSchema = new mongoose.Schema({
-    requesterId: { 
-        type: mongoose.Schema.Types.ObjectId, 
-        ref: 'User', 
-        required: true 
+    requesterId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        required: true
     },
-    companionId: { 
-        type: mongoose.Schema.Types.ObjectId, 
-        ref: 'User', 
-        required: true 
+    // Request flow: the companion asked. Prepaid flow: empty until a companion is assigned.
+    companionId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        required: function () { return this.flow !== 'prepaid'; }
     },
-    status: { 
-        type: String, 
-        enum: ['pending', 'accepted', 'rejected', 'completed', 'cancelled'], 
-        default: 'pending' 
+    status: {
+        type: String,
+        enum: ['pending', 'accepted', 'rejected', 'completed', 'cancelled'],
+        default: 'pending'
     },
     message: { type: String, default: '' },
     pricePerHour: { type: Number, required: true },
     startTime: { type: String, required: true },
     duration: { type: String, enum: ['30', '60', '90', '120', '180', '240'], required: true },
     scheduledDate: { type: Date, default: Date.now },
-    paymentStatus: { 
-        type: String, 
-        enum: ['pending', 'paid', 'failed', 'refunded'], 
-        default: 'pending' 
+    paymentStatus: {
+        type: String,
+        enum: ['pending', 'paid', 'failed', 'refunded'],
+        default: 'pending'
     },
     // 'simulated' = test payment made while PAYMENT_MODE=simulated (no money moved).
     paymentMode: { type: String, enum: ['razorpay', 'simulated'] },
@@ -33,8 +55,52 @@ const BookingSchema = new mongoose.Schema({
     razorpayPaymentId: { type: String },
     razorpaySignature: { type: String },
     amountPaid: { type: Number, default: 0 },
+    paidAt: { type: Date },
+
+    // ── Prepaid flow ──
+    flow: { type: String, enum: ['request', 'prepaid'], default: 'request' },
+    // The companion the customer picked; gets the first offer.
+    preferredCompanionId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    // Client-generated key: a retried "create booking" returns the same booking instead of a second one.
+    idempotencyKey: { type: String },
+    experience: { type: String },
+    city: { type: String },
+    area: { type: String },
+    allocation: {
+        // awaiting_payment → offering → assigned | failed ; or cancelled at any point
+        state: { type: String, enum: ['awaiting_payment', 'offering', 'assigned', 'failed', 'cancelled'] },
+        paymentDeadline: { type: Date },   // unpaid bookings lapse after this
+        deadline: { type: Date },          // overall: nobody assigned by now → fail + refund
+        assignedAt: { type: Date },
+        failedReason: { type: String },
+    },
+    offers: [OfferSchema],
+    refund: {
+        status: { type: String, enum: ['none', 'pending', 'processed', 'failed'], default: 'none' },
+        amount: { type: Number, default: 0 },  // rupees
+        reason: { type: String },
+        providerRefundId: { type: String },
+        requestedAt: { type: Date },
+        processedAt: { type: Date },
+        attempts: { type: Number, default: 0 },
+    },
+    cancelledBy: { type: String, enum: ['requester', 'companion', 'system', 'admin'] },
+    cancelReason: { type: String },
+    cancelledAt: { type: Date },
+    dispute: {
+        status: { type: String, enum: ['none', 'open', 'resolved'], default: 'none' },
+        reason: { type: String },
+        openedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        openedAt: { type: Date },
+    },
+
     createdAt: { type: Date, default: Date.now }
 }, { timestamps: true });
 
-const Booking = mongoose.model('Booking', BookingSchema);
+BookingSchema.index({ requesterId: 1, idempotencyKey: 1 }, { unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } } });
+BookingSchema.index({ flow: 1, 'allocation.state': 1 });
+BookingSchema.index({ 'offers.companionId': 1, 'offers.status': 1 });
+BookingSchema.index({ razorpayOrderId: 1 });
+
+const Booking = mongoose.models.Booking || mongoose.model('Booking', BookingSchema);
 export default Booking;

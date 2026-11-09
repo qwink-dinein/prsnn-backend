@@ -43,9 +43,12 @@ describe('getBookingById auth', () => {
   beforeEach(() => vi.clearAllMocks());
 
   function mockFindById(booking) {
+    // requester, companion and preferred companion are populated
     Booking.findById.mockReturnValue({
       populate: vi.fn().mockReturnValue({
-        populate: vi.fn().mockResolvedValue(booking)
+        populate: vi.fn().mockReturnValue({
+          populate: vi.fn().mockResolvedValue(booking)
+        })
       })
     });
   }
@@ -88,7 +91,7 @@ describe('getBookingById auth', () => {
     await getBookingById(req, res);
 
     expect(res.status).toHaveBeenCalledWith(200);
-    expect(res.json).toHaveBeenCalledWith(booking);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ _id: BOOKING_ID, requesterId: expect.objectContaining({ _id: REQUESTER_ID }), companionId: expect.objectContaining({ _id: COMPANION_ID }) }));
   });
 
   it('returns booking when caller is the companion', async () => {
@@ -104,7 +107,7 @@ describe('getBookingById auth', () => {
     await getBookingById(req, res);
 
     expect(res.status).toHaveBeenCalledWith(200);
-    expect(res.json).toHaveBeenCalledWith(booking);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ _id: BOOKING_ID, requesterId: expect.objectContaining({ _id: REQUESTER_ID }), companionId: expect.objectContaining({ _id: COMPANION_ID }) }));
   });
 });
 

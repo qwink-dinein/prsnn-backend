@@ -4,6 +4,7 @@ import Booking from '../models/Booking.js';
 import DeletedAccount from '../models/DeletedAccount.js';
 import Admin from '../models/Admin.js';
 import { invalidateCompanionsCache } from './fellows.controller.js';
+import { applyIdentity } from '../utils/privacy.js';
 
 export const getProfile = async (req, res) => {
     try {
@@ -116,6 +117,9 @@ export const onboardBasic = async (req, res) => {
         if (!user) {
             return res.status(404).json({ message: "User not found" });
         }
+
+        const identityError = applyIdentity(user, req.body);
+        if (identityError) return res.status(400).json({ message: identityError });
 
         // Update user with all profile info directly in User schema
         user.fullName = fullName;
@@ -246,6 +250,12 @@ export const onboardCompanion = async (req, res) => {
         if (idProofBack) updateData.idProofBackUrl = idProofBack;
         if (backupPhoto) updateData.backupPhotoUrl = backupPhoto;
 
+        // Gender, who they want to see, profile lock (+ consent) and state.
+        const identity = {};
+        const identityError = applyIdentity(identity, req.body);
+        if (identityError) return res.status(400).json({ message: identityError });
+        Object.assign(updateData, identity);
+
         const user = await User.findByIdAndUpdate(userId, updateData, { new: true });
 
         console.log(`Successfully onboarded companion ${userId}`);
@@ -337,7 +347,11 @@ export const updateProfile = async (req, res) => {
         const updates = req.body;
         
         const user = await User.findById(userId);
-        
+        if (!user) return res.status(404).json({ message: "Account not found" });
+
+        const identityError = applyIdentity(user, updates);
+        if (identityError) return res.status(400).json({ message: identityError });
+
         if (updates.username) user.username = updates.username;
         if (updates.email) user.email = updates.email.toLowerCase();
         if (updates.fullName) user.fullName = updates.fullName;
