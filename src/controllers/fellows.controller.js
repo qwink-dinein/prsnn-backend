@@ -97,7 +97,7 @@ export const getAllCompanions = async (req, res) => {
         const now = Date.now();
         let rows = companionsCache.get(cacheKey);
         if (!rows || now - rows.timestamp >= CACHE_DURATION) {
-            const data = await User.find({ role: 'companion', verificationStatus: 'verified' })
+            const data = await User.find({ role: 'companion', verificationStatus: 'verified', suspended: { $ne: true } })
                 .select(FIELDS)
                 .sort({ createdAt: -1 })
                 .skip(skip)
@@ -123,8 +123,8 @@ export const getAllCompanions = async (req, res) => {
  */
 export const getCompanionById = async (req, res) => {
     try {
-        const user = await User.findById(req.params.id).select(`${FIELDS} verificationStatus role`).lean();
-        if (!user || user.role !== 'companion' || user.verificationStatus !== 'verified') {
+        const user = await User.findById(req.params.id).select(`${FIELDS} verificationStatus role suspended`).lean();
+        if (!user || user.role !== 'companion' || user.verificationStatus !== 'verified' || user.suspended) {
             return res.status(404).json({ message: 'Companion not found or not verified' });
         }
         const viewer = await viewerOf(req);
@@ -151,6 +151,7 @@ export const searchCompanions = async (req, res) => {
         const companions = await User.find({
             role: 'companion',
             verificationStatus: 'verified',
+            suspended: { $ne: true },
             $or: [{ fullName: regex }, { username: regex }, { description: regex }, { tags: regex }, { area: regex }, { city: regex }],
         })
             .select(FIELDS)

@@ -4,7 +4,7 @@ import Notification from '../models/Notification.js';
 import { issueRefund, MAX_REFUND_ATTEMPTS } from '../utils/refunds.js';
 import { notifyWhatsAppLater } from '../utils/whatsappNotify.js';
 import { matchesSeeGender } from '../utils/privacy.js';
-import { companionShareOf, offeredHours } from '../utils/pricing.js';
+import { companionShareOf, offeredHours, pricing } from '../utils/pricing.js';
 
 /**
  * Prepaid booking allocation.
@@ -20,9 +20,15 @@ import { companionShareOf, offeredHours } from '../utils/pricing.js';
  */
 
 const minutes = (n) => n * 60 * 1000;
-/** Each companion's response window scales with notice, between these bounds (owner: 15 min – 5 h). */
+/**
+ * Each companion's response window scales with notice, between these bounds
+ * (owner: 15 min – 5 h). Defaults; the live values come from pricing() so an
+ * admin can change them (offerMinMinutes / offerMaxMinutes).
+ */
 export const MIN_OFFER_MS = minutes(Number(process.env.OFFER_MIN_MINUTES) || 15);
 export const MAX_OFFER_MS = minutes(Number(process.env.OFFER_MAX_MINUTES) || 300);
+const minOfferMs = () => minutes(pricing().offerMinMinutes);
+const maxOfferMs = () => minutes(pricing().offerMaxMinutes);
 /** Kept for older imports: the shortest window. */
 export const OFFER_TTL_MS = MIN_OFFER_MS;
 export const PAYMENT_TTL_MS = minutes(Number(process.env.PAYMENT_TIMEOUT_MINUTES) || 30);
@@ -40,7 +46,7 @@ export const MIN_LEAD_MS = START_BUFFER_MS + minutes(30);
  */
 export function offerWindowMs(booking, now = new Date()) {
     const available = sessionStart(booking).getTime() - START_BUFFER_MS - now.getTime();
-    return Math.min(MAX_OFFER_MS, Math.max(MIN_OFFER_MS, Math.floor(available / MAX_OFFERS)));
+    return Math.min(maxOfferMs(), Math.max(minOfferMs(), Math.floor(available / MAX_OFFERS)));
 }
 export const MAX_OFFERS = Math.min(Number(process.env.MAX_COMPANION_OFFERS) || 3, 3);
 
@@ -101,7 +107,7 @@ export async function findCandidates(booking, requester, excludeIds = [], limit 
     const exclude = new Set([String(booking.requesterId), ...excludeIds.map(String)]);
     const city = booking.city || requester?.city;
     // Same price list for everyone: a backup just has to offer the booked duration.
-    const query = { role: 'companion', verificationStatus: 'verified' };
+    const query = { role: 'companion', verificationStatus: 'verified', suspended: { $ne: true } };
     const hours = (parseInt(booking.duration, 10) || 60) / 60;
     if (city) query.city = new RegExp(`^${String(city).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
     const pool = await User.find(query)

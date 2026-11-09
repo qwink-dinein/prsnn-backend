@@ -33,9 +33,19 @@ const UserSchema = new mongoose.Schema({
     // Role & Status
     role: {
         type: String,
-        enum: ['user', 'companion', 'admin', 'superadmin'],
+        enum: ['user', 'companion', 'admin', 'subadmin', 'superadmin'],
         default: 'user'
     },
+    // Set when the phone is in SUPERADMIN_PHONES (promoted on login). Removing the
+    // number from the env demotes the account at its next login.
+    superadminViaEnv: { type: Boolean },
+    // Suspended accounts cannot log in and are hidden from listings and offers.
+    suspended: { type: Boolean, default: false },
+    suspendedAt: { type: Date },
+    suspendedReason: { type: String },
+    // Expo push token for this account's latest device (PUT /api/profile/push-token).
+    pushToken: { type: String },
+    pushTokenUpdatedAt: { type: Date },
     verificationStatus: {
         type: String, // 'not_submitted', 'pending', 'verified', 'rejected'
         default: 'not_submitted'
@@ -128,7 +138,8 @@ const UserSchema = new mongoose.Schema({
 UserSchema.index({ role: 1, verificationStatus: 1, createdAt: -1 }); // For fetching verified companions efficiently with sort
 UserSchema.index({ city: 1 }); // For city-based filtering
 UserSchema.index({ role: 1, verificationStatus: 1, gender: 1, city: 1 }); // Matching for prepaid offers
-UserSchema.index({ tags: 1 }); // For tag-based filtering
+UserSchema.index({ tags: 1 });
+UserSchema.index({ role: 1, pushToken: 1 }); // Broadcast audiences // For tag-based filtering
 // Unique only where present: phone-OTP accounts have no email. Requires migratePhoneAuth.js once
 // on existing databases (drops the old non-partial email_1 index, which treats missing as null).
 UserSchema.index({ email: 1 }, { unique: true, partialFilterExpression: { email: { $type: 'string' } } });
@@ -138,7 +149,7 @@ UserSchema.index({ 'availability.monday': 1, 'availability.tuesday': 1, 'availab
 UserSchema.index({ createdAt: -1 }); // For sorting by creation date
 
 /** Fields that must never leave the server, even to the account owner. */
-export const PRIVATE_USER_FIELDS = '-password -otp -otpExpires -phoneOtpHash -phoneOtpExpires -phoneOtpAttempts -phoneOtpSentAt -pinHash -pinFailedAttempts -pinLockedUntil';
+export const PRIVATE_USER_FIELDS = '-password -otp -otpExpires -phoneOtpHash -phoneOtpExpires -phoneOtpAttempts -phoneOtpSentAt -pinHash -pinFailedAttempts -pinLockedUntil -pushToken';
 
 const User = mongoose.models.User || mongoose.model('User', UserSchema);
 

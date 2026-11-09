@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../../models/User.js', () => {
   const User = vi.fn(function (data) {
@@ -188,5 +188,30 @@ describe('PIN', () => {
     await pinLogin({ body: { phone: PHONE, pin: '4826' } }, b);
     expect(a.status.mock.calls[0][0]).toBe(401);
     expect(a.json.mock.calls[0][0]).toEqual(b.json.mock.calls[0][0]);
+  });
+});
+
+describe('admin roles at login (ADMIN_SPEC)', () => {
+  const OLD = process.env.SUPERADMIN_PHONES;
+  afterEach(() => {
+    process.env.SUPERADMIN_PHONES = OLD;
+  });
+
+  it('a phone in SUPERADMIN_PHONES is promoted on PIN login and gets a superadmin token', async () => {
+    process.env.SUPERADMIN_PHONES = '9876543210';
+    const u = existing({ pinHash: await hashPassword('4826') });
+    User.findOne.mockResolvedValue(u);
+    const res = mkRes();
+    await pinLogin({ body: { phone: PHONE, pin: '4826' } }, res);
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json.mock.calls[0][0].user.role).toBe('superadmin');
+    expect(u.save).toHaveBeenCalled();
+  });
+
+  it('suspended accounts cannot log in', async () => {
+    User.findOne.mockResolvedValue(existing({ suspended: true, pinHash: await hashPassword('4826') }));
+    const res = mkRes();
+    await pinLogin({ body: { phone: PHONE, pin: '4826' } }, res);
+    expect(res.status).toHaveBeenCalledWith(403);
   });
 });

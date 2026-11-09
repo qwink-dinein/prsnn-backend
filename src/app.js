@@ -14,6 +14,8 @@ import bookingRoutes from "./routes/booking.routes.js";
 import paymentRoutes from "./routes/payment.routes.js";
 import notificationRoutes from "./routes/notification.routes.js";
 import publicRoutes from "./routes/public.routes.js";
+import adminAppRoutes, { adminTopLevel } from "./routes/adminApp.routes.js";
+import settingsRoutes from "./routes/settings.routes.js";
 import { razorpayWebhook } from "./controllers/payment.controller.js";
 
 const app = express();
@@ -83,11 +85,14 @@ app.use('/uploads', express.static('uploads'));
 app.use("/api/auth", authRoutes);
 app.use("/api/profile", profileRoutes);
 app.use("/api/companions", fellowsRoutes);
+app.use("/api/admin/app", adminAppRoutes);
+app.use("/api/admin", adminTopLevel);
 app.use("/api/admin", adminRoutes);
 app.use("/api/bookings", bookingRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/public", publicRoutes);
+app.use("/api/settings", settingsRoutes);
 
 // 404 Handler
 app.use((req, res, next) => {

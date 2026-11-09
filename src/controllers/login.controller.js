@@ -40,6 +40,9 @@ export const login = async (req, res) => {
     if (!isMatch) {
         return res.status(401).json({ message: "Invalid password" });
     }
+    if (user.suspended) {
+        return res.status(403).json({ message: "This account is suspended. Contact support if you think this is a mistake." });
+    }
 
     // 3. Check for Email Verification
     if (!user.isEmailVerified && user.role !== 'superadmin' && user.role !== 'admin') {

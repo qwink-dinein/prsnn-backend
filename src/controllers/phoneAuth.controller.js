@@ -4,6 +4,9 @@ import { generateToken } from '../utils/token.js';
 import { hashPassword, comparePassword } from '../utils/hash.js';
 import { deliverOtp } from '../utils/otpDelivery.js';
 import { generateCode, hashCode, normaliseIndianMobile, safeEqualHex, WEAK_PINS } from '../utils/phone.js';
+import { syncSuperadmin } from '../utils/superadmin.js';
+
+const SUSPENDED = 'This account is suspended. Contact support if you think this is a mistake.';
 
 /**
  * Phone login for the mobile app.
@@ -26,7 +29,7 @@ export const PIN_LOCK_MS = 15 * 60 * 1000;
 
 /** Same shape the existing login/verify-email endpoints return, plus phone + hasPin. */
 export function sessionUser(user) {
-  const isVerified = user.role === 'superadmin' || user.verificationStatus === 'verified';
+  const isVerified = ['superadmin', 'subadmin'].includes(user.role) || user.verificationStatus === 'verified';
   return {
     id: user._id,
     email: user.email,
@@ -106,6 +109,8 @@ export const verifyPhoneOtp = async (req, res) => {
       return res.status(400).json({ message: 'That code isn’t right. Check and try again.' });
     }
 
+    if (user?.suspended) return res.status(403).json({ message: SUSPENDED });
+
     let isNewUser = false;
     if (!user) {
       const role = req.body?.role === 'companion' ? 'companion' : 'user';
@@ -124,6 +129,7 @@ export const verifyPhoneOtp = async (req, res) => {
     user.phoneOtpHash = undefined;
     user.phoneOtpExpires = undefined;
     user.phoneOtpAttempts = 0;
+    syncSuperadmin(user); // phones in SUPERADMIN_PHONES become superadmin
     await user.save();
 
     const token = generateToken({ userId: user._id, role: user.role });
@@ -180,8 +186,10 @@ export const pinLogin = async (req, res) => {
       return res.status(401).json({ message: 'Incorrect PIN.' });
     }
 
+    if (user.suspended) return res.status(403).json({ message: SUSPENDED });
     user.pinFailedAttempts = 0;
     user.pinLockedUntil = undefined;
+    syncSuperadmin(user);
     await user.save();
     const token = generateToken({ userId: user._id, role: user.role });
     return res.status(200).json({ token, user: sessionUser(user) });

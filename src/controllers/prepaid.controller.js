@@ -6,7 +6,15 @@ import { amountDueInPaise } from '../utils/razorpay.js';
 import { sendEmail } from '../utils/sendEmail.js';
 import { acceptOffer, declineOffer, isAvailableFor, MIN_LEAD_MS, PAYMENT_TTL_MS, MAX_OFFERS, sessionStart } from '../services/allocation.js';
 import { matchesSeeGender } from '../utils/privacy.js';
-import { BASE_RATE, CANCELLATION_CUTOFF_MINUTES, CANCELLATION_FEE, PACKAGE_PRICES, offeredHours, withinDay } from '../utils/pricing.js';
+import { BASE_RATE, offeredHours, packagePriceFor, pricing, withinDay } from '../utils/pricing.js';
+import { refreshPricing } from '../services/settings.js';
+
+const fee = () => pricing().cancellationFee;
+const cutoff = () => pricing().cancellationCutoffMinutes;
+const hhmm12 = (t) => {
+    const [h, m] = String(t).split(':').map(Number);
+    return `${((h + 11) % 12) + 1}:${String(m).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`;
+};
 
 /**
  * The terms shown before payment (app checkout) — kept here so the server is
@@ -15,15 +23,28 @@ import { BASE_RATE, CANCELLATION_CUTOFF_MINUTES, CANCELLATION_FEE, PACKAGE_PRICE
 const SUPPORT = () => process.env.SUPPORT_EMAIL || 'mukarramjahmm@gmail.com';
 const pct = (x) => `${Math.round(x * 100)}%`;
 
+const span = (min) => (min % 60 === 0 ? `${min / 60} ${min === 60 ? 'hour' : 'hours'}` : `${min} minutes`);
+
+/** Built from the pricing in force, so an admin change shows up in the terms at once. */
 export const POLICY = {
-    fees: 'No booking fee. One price list for every companion: ₹399 for 1 hour, with lower hourly rates for longer bookings. The price shown is the total you pay, whichever companion accepts — you are never charged more.',
-    allocation: `Payment reserves your booking; it is confirmed when an eligible companion accepts. Your chosen companion gets between 15 minutes and 5 hours to respond, depending on how far away your session is. If they can’t make it, we offer your booking to up to ${MAX_OFFERS - 1} similar verified companions, one at a time (same city, your “show me” preference, available for your chosen duration). If nobody accepts at least 1 hour before the session, it is cancelled and fully refunded.`,
-    cancellation: [
-        `Cancel at least ${CANCELLATION_CUTOFF_MINUTES} minutes before the session starts: ${pct(1 - CANCELLATION_FEE)} refunded (a ${pct(CANCELLATION_FEE)} cancellation fee is kept by prsnn).`,
-        `Cancel within ${CANCELLATION_CUTOFF_MINUTES} minutes of the start, or after it starts: no refund.`,
-        'If your companion cancels, or no companion accepts: full refund.',
-        'Companion no-show: full refund after review. Your own no-show: no refund.',
-    ],
+    get fees() {
+        return `No booking fee. One price list for every companion: ₹${pricing().packagePrices[1]} for 1 hour, with lower hourly rates for longer bookings. The price shown is the total you pay, whichever companion accepts — you are never charged more.`;
+    },
+    get allocation() {
+        const p = pricing();
+        return `Payment reserves your booking; it is confirmed when an eligible companion accepts. Your chosen companion gets between ${span(p.offerMinMinutes)} and ${span(p.offerMaxMinutes)} to respond, depending on how far away your session is. If they can’t make it, we offer your booking to up to ${MAX_OFFERS - 1} similar verified companions, one at a time (same city, your “show me” preference, available for your chosen duration). If nobody accepts at least 1 hour before the session, it is cancelled and fully refunded.`;
+    },
+    get hours() {
+        return `Sessions start at or after ${hhmm12(pricing().dayStart)} and finish by ${hhmm12(pricing().dayEnd)}.`;
+    },
+    get cancellation() {
+        return [
+            `Cancel at least ${cutoff()} minutes before the session starts: ${pct(1 - fee())} refunded (a ${pct(fee())} cancellation fee is kept by prsnn).`,
+            `Cancel within ${cutoff()} minutes of the start, or after it starts: no refund.`,
+            'If your companion cancels, or no companion accepts: full refund.',
+            'Companion no-show: full refund after review. Your own no-show: no refund.',
+        ];
+    },
     refunds: 'Refunds go to your original payment method. Timing depends on your bank or UPI app.',
     get support() {
         return SUPPORT();
@@ -50,8 +71,9 @@ export const createPrepaidBooking = async (req, res) => {
         if (acceptTerms !== true) return res.status(400).json({ message: 'Please accept the cancellation and refund terms.' });
         if (!companionId || !scheduledDate || !startTime) return res.status(400).json({ message: 'Choose a companion, date and time.' });
         if (!/^\d{4}-\d{2}-\d{2}/.test(String(scheduledDate)) || !/^\d{2}:\d{2}$/.test(String(startTime))) return res.status(400).json({ message: 'Invalid date or time.' });
+        await refreshPricing();
         const hours = parseInt(duration, 10) / 60;
-        if (!Number.isInteger(hours) || !PACKAGE_PRICES[hours]) return res.status(400).json({ message: 'Choose a duration between 1 and 12 hours.' });
+        if (!Number.isInteger(hours) || !packagePriceFor(String(hours * 60))) return res.status(400).json({ message: 'Choose a duration between 1 and 12 hours.' });
         const dur = String(hours * 60);
         if (String(companionId) === String(requesterId)) return res.status(400).json({ message: 'You cannot book yourself.' });
 
@@ -60,10 +82,10 @@ export const createPrepaidBooking = async (req, res) => {
             User.findById(companionId).select('role verificationStatus gender pricePerHour packages availability startTime endTime city area').lean(),
         ]);
         if (!requester) return res.status(404).json({ message: 'Account not found.' });
-        if (!companion || companion.role !== 'companion' || companion.verificationStatus !== 'verified') return res.status(404).json({ message: 'Companion not found.' });
+        if (!companion || companion.role !== 'companion' || companion.verificationStatus !== 'verified' || companion.suspended) return res.status(404).json({ message: 'Companion not found.' });
         if (!matchesSeeGender(requester.seeGender, companion.gender)) return res.status(404).json({ message: 'Companion not found.' });
         if (!offeredHours(companion).includes(hours)) return res.status(400).json({ message: `This companion doesn’t offer ${hours}-hour bookings.` });
-        if (!withinDay(startTime, dur)) return res.status(400).json({ message: 'Sessions must start at or after 7:00 AM and finish by 10:00 PM.' });
+        if (!withinDay(startTime, dur)) return res.status(400).json({ message: POLICY.hours });
 
         const draft = { scheduledDate: new Date(`${String(scheduledDate).slice(0, 10)}T00:00:00.000Z`), startTime, duration: dur };
         if (!isAvailableFor(companion, draft)) return res.status(400).json({ message: 'This companion isn’t available at that day and time.' });
@@ -78,7 +100,7 @@ export const createPrepaidBooking = async (req, res) => {
                 preferredCompanionId: companionId,
                 idempotencyKey,
                 pricePerHour: BASE_RATE,
-                packagePrice: PACKAGE_PRICES[hours],
+                packagePrice: packagePriceFor(dur),
                 duration: dur,
                 startTime,
                 scheduledDate: draft.scheduledDate,
@@ -185,11 +207,11 @@ export async function cancelPrepaid(booking, userId, now = new Date()) {
         const minutesToStart = (sessionStart(updated).getTime() - now.getTime()) / 60000;
         if (isCompanion) {
             refundAmount = updated.amountPaid; // companion cancelled: customer gets everything back
-        } else if (minutesToStart >= CANCELLATION_CUTOFF_MINUTES) {
-            refundAmount = Math.round(updated.amountPaid * (1 - CANCELLATION_FEE)); // 15% cancellation fee kept by prsnn
+        } else if (minutesToStart >= cutoff()) {
+            refundAmount = Math.round(updated.amountPaid * (1 - fee())); // cancellation fee (15% by default) kept by prsnn
         }
         if (refundAmount > 0) {
-            refund = await issueRefund(updated._id, refundAmount, isCompanion ? 'Companion cancelled' : `Customer cancelled ${Math.floor(minutesToStart)} min before start (${Math.round((1 - CANCELLATION_FEE) * 100)}% refund)`);
+            refund = await issueRefund(updated._id, refundAmount, isCompanion ? 'Companion cancelled' : `Customer cancelled ${Math.floor(minutesToStart)} min before start (${Math.round((1 - fee()) * 100)}% refund)`);
             await Booking.updateOne({ _id: updated._id }, { $set: { 'refund.retained': Math.round((updated.amountPaid - refundAmount) * 100) / 100 } });
         }
     }
@@ -201,9 +223,9 @@ export async function cancelPrepaid(booking, userId, now = new Date()) {
         updated.paymentStatus !== 'paid'
             ? 'Cancelled. Nothing was charged.'
             : refundAmount === 0
-              ? `Cancelled. It was within ${CANCELLATION_CUTOFF_MINUTES} minutes of the start, so there’s no refund — report a problem if something went wrong.`
+              ? `Cancelled. It was within ${cutoff()} minutes of the start, so there’s no refund — report a problem if something went wrong.`
               : refundAmount < updated.amountPaid
-                ? `Cancelled. ₹${refundAmount} (${Math.round((1 - CANCELLATION_FEE) * 100)}%) is being refunded.`
+                ? `Cancelled. ₹${refundAmount} (${Math.round((1 - fee()) * 100)}%) is being refunded.`
                 : `Cancelled. ₹${refundAmount} is being refunded in full.`;
     return { code: 200, message, booking: await Booking.findById(updated._id), refund, refundAmount };
 }

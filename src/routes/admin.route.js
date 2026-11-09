@@ -7,7 +7,7 @@ const router = express.Router();
 
 // Every route below is staff-only. Authorization is declared here rather than
 // inside each controller so a new route cannot silently ship unguarded.
-const staff = [authMiddleware, requireRole('admin', 'superadmin')];
+const staff = [authMiddleware, requireRole('admin', 'subadmin', 'superadmin')];
 const superOnly = [authMiddleware, requireRole('superadmin')];
 
 // User Verification (Admins)

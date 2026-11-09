@@ -1,5 +1,5 @@
 import express from 'express';
-import { getProfile, checkProfile, onboardBasic, onboardCompanion, onboardAdmin, updateProfile, deleteOwnAccount } from '../controllers/profile.controller.js';
+import { getProfile, checkProfile, onboardBasic, onboardCompanion, onboardAdmin, updateProfile, deleteOwnAccount, savePushToken } from '../controllers/profile.controller.js';
 import { authMiddleware } from '../middleware/auth.middleware.js';
 import { upload } from '../middleware/upload.middleware.js';
 
@@ -36,6 +36,9 @@ router.put('/update', authMiddleware, upload.fields([
     { name: 'backupPhoto', maxCount: 1 },
     { name: 'photo', maxCount: 1 }
 ]), updateProfile);
+
+// Expo push token for this device (admin broadcasts)
+router.put('/push-token', authMiddleware, savePushToken);
 
 // Self-service account deletion (App Store / Play requirement for apps with sign-up)
 router.delete('/', authMiddleware, deleteOwnAccount);

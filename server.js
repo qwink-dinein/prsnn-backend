@@ -6,6 +6,7 @@ import connectMongo from "./src/config/mongo.js";
 import http from 'http';
 import initializeSocket from "./src/socket/index.js";
 import { startAllocationWorker } from "./src/services/allocation.js";
+import { startPricingRefresh } from "./src/services/settings.js";
 
 const PORT = process.env.PORT || 5000;
 
@@ -46,6 +47,9 @@ connectMongo().then(() => {
 
   // Prepaid bookings: expire offers, offer the next companion, refund unfilled bookings.
   startAllocationWorker();
+
+  // Admin-editable prices (Settings key 'pricing'), refreshed every 60 s.
+  startPricingRefresh();
 
   server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);

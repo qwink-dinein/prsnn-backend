@@ -98,6 +98,23 @@ const BookingSchema = new mongoose.Schema({
         reason: { type: String },
         openedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
         openedAt: { type: Date },
+        // Admin replies (also sent to both parties as notifications).
+        notes: [{
+            by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+            role: { type: String },
+            message: { type: String },
+            at: { type: Date, default: Date.now },
+        }],
+        resolution: { type: String },
+        resolvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        resolvedAt: { type: Date },
+    },
+    // A sub-admin cancelled a paid booking: no money moved, a superadmin decides the refund.
+    refundReview: {
+        needed: { type: Boolean, default: false },
+        note: { type: String },
+        requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        requestedAt: { type: Date },
     },
 
     createdAt: { type: Date, default: Date.now }
@@ -107,6 +124,8 @@ BookingSchema.index({ requesterId: 1, idempotencyKey: 1 }, { unique: true, parti
 BookingSchema.index({ flow: 1, 'allocation.state': 1 });
 BookingSchema.index({ 'offers.companionId': 1, 'offers.status': 1 });
 BookingSchema.index({ razorpayOrderId: 1 });
+BookingSchema.index({ 'dispute.status': 1, updatedAt: -1 });
+BookingSchema.index({ 'refund.status': 1 });
 
 const Booking = mongoose.models.Booking || mongoose.model('Booking', BookingSchema);
 export default Booking;

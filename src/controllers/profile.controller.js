@@ -5,7 +5,8 @@ import DeletedAccount from '../models/DeletedAccount.js';
 import Admin from '../models/Admin.js';
 import { invalidateCompanionsCache } from './fellows.controller.js';
 import { applyIdentity } from '../utils/privacy.js';
-import { BASE_RATE, cleanPackages, DAY_END_MIN, DAY_START_MIN } from '../utils/pricing.js';
+import { BASE_RATE, cleanPackages, dayEndMin, dayStartMin } from '../utils/pricing.js';
+import { isExpoToken } from '../utils/expoPush.js';
 
 export const getProfile = async (req, res) => {
     try {
@@ -235,7 +236,7 @@ export const onboardCompanion = async (req, res) => {
             if (!t) return true; // Let frontend handle required check if empty, or schema default
             const [h, m] = t.split(':').map(Number);
             const tm = h * 60 + m;
-            return tm >= DAY_START_MIN && tm <= DAY_END_MIN;
+            return tm >= dayStartMin() && tm <= dayEndMin();
         };
 
         if (!validateTimeBackend(startTime) || !validateTimeBackend(endTime)) {
@@ -383,7 +384,7 @@ export const updateProfile = async (req, res) => {
         const inDay = (t) => {
             const [h, m] = String(t).split(':').map(Number);
             const tm = h * 60 + m;
-            return tm >= DAY_START_MIN && tm <= DAY_END_MIN;
+            return tm >= dayStartMin() && tm <= dayEndMin();
         };
         if ((updates.startTime && !inDay(updates.startTime)) || (updates.endTime && !inDay(updates.endTime))) {
             return res.status(400).json({ message: "Availability must be between 7:00 AM and 10:00 PM." });
@@ -486,7 +487,7 @@ export const deleteOwnAccount = async (req, res) => {
     try {
         const user = await User.findById(req.user.id);
         if (!user) return res.status(404).json({ message: "Account not found" });
-        if (user.role === 'admin' || user.role === 'superadmin') {
+        if (['admin', 'subadmin', 'superadmin'].includes(user.role)) {
             return res.status(403).json({ message: "Staff accounts are removed by a super admin." });
         }
 
@@ -511,5 +512,23 @@ export const deleteOwnAccount = async (req, res) => {
     } catch (error) {
         console.error("Delete own account error:", error.message);
         res.status(500).json({ message: "Could not delete your account. Please contact support." });
+    }
+};
+
+/**
+ * PUT /api/profile/push-token { token } — the Expo push token of this device
+ * (null clears it on sign-out). One token per account: the latest device wins.
+ */
+export const savePushToken = async (req, res) => {
+    try {
+        const token = req.body?.token ?? null;
+        if (token !== null && !isExpoToken(token)) return res.status(400).json({ message: 'Not an Expo push token.' });
+        // A device that switches accounts must stop receiving the old account's pushes.
+        if (token) await User.updateMany({ pushToken: token, _id: { $ne: req.user.id } }, { $unset: { pushToken: '' } });
+        await User.updateOne({ _id: req.user.id }, token ? { $set: { pushToken: token, pushTokenUpdatedAt: new Date() } } : { $unset: { pushToken: '' } });
+        res.status(200).json({ message: token ? 'Notifications on.' : 'Notifications off.' });
+    } catch (error) {
+        console.error('Save push token error:', error.message);
+        res.status(500).json({ message: 'Could not save the notification settings.' });
     }
 };
