@@ -181,7 +181,11 @@ export const onboardCompanion = async (req, res) => {
             tags
         } = req.body;
 
-        console.log(`Starting companion onboarding for user ${userId}`);
+        const current = await User.findById(userId).select('role').lean();
+        if (!current) return res.status(404).json({ message: "Account not found." });
+        if (['admin', 'subadmin', 'superadmin'].includes(current.role)) {
+            return res.status(403).json({ message: "Staff accounts can't apply as companions. Use a separate number." });
+        }
 
         // Update User Doc (Core Searchable Data)
         let tagsArray = [];
@@ -279,10 +283,7 @@ export const onboardCompanion = async (req, res) => {
         });
     } catch (error) {
         console.error("COMPANION ONBOARDING ERROR:", error);
-        res.status(500).json({ 
-            message: "Server error during onboarding", 
-            details: error.message
-        });
+        res.status(500).json({ message: "Could not submit your application. Please try again." });
     }
 };
 
@@ -472,7 +473,7 @@ export const updateProfile = async (req, res) => {
         res.status(200).json({ message: "Profile updated successfully" });
     } catch (error) {
         console.error("Update Profile error:", error);
-        res.status(500).json({ message: "Server error updating profile", details: error.message });
+        res.status(500).json({ message: "Could not save your profile. Please try again." });
     }
 };
 
@@ -491,9 +492,17 @@ export const deleteOwnAccount = async (req, res) => {
             return res.status(403).json({ message: "Staff accounts are removed by a super admin." });
         }
 
+        // Paid, still-open bookings would be cancelled without a refund. Make the
+        // person cancel them first, so the refund rules run.
+        const mine = { $or: [{ requesterId: user._id }, { companionId: user._id }] };
+        const openPaid = await Booking.countDocuments({ ...mine, status: { $in: ['pending', 'accepted'] }, paymentStatus: 'paid' });
+        if (openPaid) {
+            return res.status(409).json({ message: `You have ${openPaid} paid booking${openPaid === 1 ? '' : 's'} coming up. Cancel ${openPaid === 1 ? 'it' : 'them'} first (refunds follow the usual rules), then delete your account.` });
+        }
+
         await Booking.updateMany(
-            { $or: [{ requesterId: user._id }, { companionId: user._id }], status: { $in: ['pending', 'accepted'] } },
-            { $set: { status: 'cancelled' } }
+            { ...mine, status: { $in: ['pending', 'accepted'] } },
+            { $set: { status: 'cancelled', 'allocation.state': 'cancelled', cancelledBy: user.role === 'companion' ? 'companion' : 'requester', cancelReason: 'account_deleted', cancelledAt: new Date() } }
         );
 
         await DeletedAccount.create({

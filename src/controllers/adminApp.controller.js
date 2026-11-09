@@ -125,7 +125,9 @@ export const overview = async (req, res) => {
                         _id: null,
                         collected: { $sum: { $ifNull: ['$amountPaid', 0] } },
                         refunded: { $sum: { $cond: [{ $eq: ['$refund.status', 'processed'] }, { $ifNull: ['$refund.amount', 0] }, 0] } },
-                        payouts: { $sum: { $ifNull: ['$companionShare', 0] } },
+                        // Owed to companions only for sessions that stand (confirmed or done);
+                        // a cancelled booking keeps its companionShare field but pays nothing.
+                        payouts: { $sum: { $cond: [{ $in: ['$status', ['accepted', 'completed']] }, { $ifNull: ['$companionShare', 0] }, 0] } },
                     },
                 },
             ]);
@@ -609,8 +611,8 @@ export const refundBooking = async (req, res) => {
         if (!validId(req.params.id)) return res.status(404).json({ message: 'Booking not found.' });
         const b = await Booking.findById(req.params.id);
         if (!b) return res.status(404).json({ message: 'Booking not found.' });
-        if (b.paymentStatus !== 'paid') return res.status(400).json({ message: 'Only a paid booking can be refunded.' });
         if (['pending', 'processed'].includes(b.refund?.status)) return res.status(409).json({ message: 'A refund has already been issued for this booking.' });
+        if (b.paymentStatus !== 'paid') return res.status(400).json({ message: 'Only a paid booking can be refunded.' });
         const amount = rupees(req.body?.amount ?? b.amountPaid);
         if (!(amount > 0 && amount <= b.amountPaid)) return res.status(400).json({ message: `Refund must be more than ₹0 and at most ₹${b.amountPaid}.` });
         const reason = String(req.body?.reason ?? 'Refund by prsnn support').slice(0, 200);

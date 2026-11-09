@@ -142,7 +142,7 @@ export const createBooking = async (req, res) => {
         res.status(201).json({ message: "Booking request sent successfully!", booking: newBooking });
     } catch (error) {
         console.error("Create Booking Error:", error);
-        res.status(500).json({ message: "Failed to create booking request.", details: error.message });
+        res.status(500).json({ message: "Failed to create booking request." });
     }
 };
 

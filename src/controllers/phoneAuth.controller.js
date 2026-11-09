@@ -5,6 +5,7 @@ import { hashPassword, comparePassword } from '../utils/hash.js';
 import { deliverOtp } from '../utils/otpDelivery.js';
 import { generateCode, hashCode, normaliseIndianMobile, safeEqualHex, WEAK_PINS } from '../utils/phone.js';
 import { syncSuperadmin } from '../utils/superadmin.js';
+import { testCodeFor } from '../utils/testNumbers.js';
 
 const SUSPENDED = 'This account is suspended. Contact support if you think this is a mistake.';
 
@@ -64,8 +65,11 @@ export const sendPhoneOtp = async (req, res) => {
       return res.status(429).json({ message: `Please wait ${wait} seconds before asking for a new code.` });
     }
 
-    const code = generateCode();
-    const sent = await deliverOtp(phone, code, { preferSms: req.body?.channel === 'sms' });
+    // Review/QA numbers (OTP_TEST_NUMBERS): fixed code, nothing is sent.
+    const testCode = testCodeFor(phone);
+    const code = testCode ?? generateCode();
+    if (testCode) console.info(`OTP test number used: …${phone.slice(-4)}`);
+    const sent = testCode ? { ok: true, channel: req.body?.channel === 'sms' ? 'sms' : 'whatsapp', status: 200 } : await deliverOtp(phone, code, { preferSms: req.body?.channel === 'sms' });
     if (!sent.ok) {
       if (sent.status === 429) return res.status(429).json({ message: 'Too many codes are being sent right now. Please try again in a minute.' });
       if (sent.status === 400) return res.status(400).json({ message: 'We couldn’t send a code to this number on WhatsApp. Try “Send by SMS instead”.' });

@@ -68,19 +68,23 @@ app.use(compression());
 app.use(express.json());
 
 // Rate Limiter: 100 requests per 15 minutes
+// Mobile carriers in India put many people behind one IP (CGNAT), and the app
+// polls a few endpoints, so 100 per IP locked real users out. Default 1000;
+// RATE_LIMIT_MAX overrides. Login and OTP routes have their own tight limits.
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per `windowMs`
+  max: Number(process.env.RATE_LIMIT_MAX) || 1000,
   standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
   legacyHeaders: false, // Disable the `X-RateLimit-*` headers
-  message: "Too many requests from this IP, please try again after 15 minutes"
+  message: { message: "Too many requests. Please try again in a few minutes." }
 });
 
 // Apply rate limiting to all requests (or could be specific to /api)
 app.use("/api/", limiter);
 
 // Serve uploads (Note: In production, consider cloud storage like AWS S3 or Cloudinary for persistence)
-app.use('/uploads', express.static('uploads'));
+// Local-disk uploads (development only) are loaded by the app from another origin.
+app.use('/uploads', (req, res, next) => { res.set('Cross-Origin-Resource-Policy', 'cross-origin'); next(); }, express.static('uploads'));
 
 app.use("/api/auth", authRoutes);
 app.use("/api/profile", profileRoutes);

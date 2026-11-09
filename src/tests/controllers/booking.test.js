@@ -60,7 +60,7 @@ describe('Booking Controller', () => {
       );
     };
 
-    it('should return 403 if the requester is not verified', async () => {
+    it('does not block members whose verification is pending (removed on purpose: members are verified by phone)', async () => {
       req.body = { companionId: 'companion123', scheduledDate: '2026-10-10', startTime: '10:00' };
       mockUsers({ _id: 'companion123', role: 'companion' }, {
         _id: 'requesterId123', role: 'user', verificationStatus: 'pending'
@@ -68,10 +68,7 @@ describe('Booking Controller', () => {
 
       await createBooking(req, res);
 
-      expect(res.status).toHaveBeenCalledWith(403);
-      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
-        message: expect.stringContaining('verification')
-      }));
+      expect(res.status).not.toHaveBeenCalledWith(403);
     });
 
     it('should return 400 if companionId is missing', async () => {
