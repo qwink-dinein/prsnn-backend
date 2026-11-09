@@ -28,3 +28,17 @@ Every client call is an RPC (`supabase.rpc('…')`) to a security-definer functi
 5. Test logins for reviewers: **Auth → Providers → Phone → Test phone numbers** (`919000000009=123456`).
 
 Payment mode lives in `private.config` (`payment_mode` = `simulated` | `razorpay`). Razorpay is not wired yet.
+
+## Test accounts (delete before launch)
+
+`scripts/e2e-supabase.mjs` in prsnn-mobile signs in five e2e accounts (`e2e-*@prsnn.test`, email +
+password, phones 90000 0000x; the password is not in any repo). One of them (90000 00000) is a
+superadmin through `private.superadmin_phones`. Before real users arrive:
+
+```sql
+delete from public.bookings where requester_id in (select id from auth.users where email like 'e2e-%@prsnn.test');
+delete from auth.users where email like 'e2e-%@prsnn.test';
+delete from private.superadmin_phones where phone like '900000000%';
+```
+
+Then turn off **Auth → Providers → Email** (the app only uses phone login).
