@@ -4,6 +4,7 @@ import User from '../models/User.js';
 import Notification from '../models/Notification.js';
 import Message from '../models/Message.js';
 import { maskPhoneNumber } from '../utils/maskPhoneNumber.js';
+import { notifyWhatsAppLater } from '../utils/whatsappNotify.js';
 
 export const createBooking = async (req, res) => {
     try {
@@ -88,6 +89,7 @@ export const createBooking = async (req, res) => {
             type: 'booking_request',
             message: `${requesterName} has sent you a booking request.`
         });
+        notifyWhatsAppLater('booking_request', companion, { booking: newBooking, requester, companion });
 
         res.status(201).json({ message: "Booking request sent successfully!", booking: newBooking });
     } catch (error) {
@@ -168,6 +170,10 @@ export const updateBookingStatus = async (req, res) => {
                 type: 'booking_accepted',
                 message: `${companionName} has accepted your booking request.`
             });
+            if (requester) {
+                const amount = booking.pricePerHour * ((parseInt(booking.duration, 10) || 60) / 60);
+                notifyWhatsAppLater('booking_accepted', requester, { booking, requester, companion, amount });
+            }
         }
 
         res.status(200).json({ message: `Booking ${status} successfully.`, booking });

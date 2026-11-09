@@ -4,6 +4,35 @@ import crypto from 'crypto';
 import Booking from '../models/Booking.js';
 import User from '../models/User.js';
 import Notification from '../models/Notification.js';
+import { notifyWhatsAppLater } from '../utils/whatsappNotify.js';
+
+/**
+ * PAYMENT_MODE=simulated turns on a test checkout for the mobile app: no
+ * Razorpay call, no money moves, the booking is marked paid with
+ * paymentMode 'simulated'. Use it on the TESTING service only — the website
+ * still needs Razorpay order ids, so production keeps the default 'razorpay'.
+ */
+export const paymentMode = () => (process.env.PAYMENT_MODE === 'simulated' ? 'simulated' : 'razorpay');
+
+/** Shared by real and simulated payments: mark paid, tell the companion (in app + WhatsApp). */
+async function markPaid(booking, { paymentId, signature, amountRupees, mode }) {
+    booking.paymentStatus = 'paid';
+    booking.paymentMode = mode;
+    booking.razorpayPaymentId = paymentId;
+    if (signature) booking.razorpaySignature = signature;
+    booking.amountPaid = amountRupees;
+    await booking.save();
+
+    const refId = booking._id.toString().slice(-6).toUpperCase();
+    await Notification.create({
+        userId: booking.companionId,
+        type: 'payment_completed',
+        message: `Payment received for booking #${refId}. Chat is now open.`
+    });
+
+    const [requester, companion] = await Promise.all([User.findById(booking.requesterId), User.findById(booking.companionId)]);
+    if (companion) notifyWhatsAppLater('payment_received', companion, { booking, requester, companion, amount: amountRupees });
+}
 
 /**
  * Razorpay client, built on first use.
@@ -60,6 +89,15 @@ export const createPaymentIntent = async (req, res) => {
         // Calculate amount (duration stored as minutes string)
         const amountInPaise = amountDueInPaise(booking);
 
+        if (paymentMode() === 'simulated') {
+            return res.status(200).json({
+                mode: 'simulated',
+                orderId: `sim_${booking._id}`,
+                amount: amountInPaise,
+                currency: 'INR'
+            });
+        }
+
         // IDEMPOTENCY: If an order was already created for this booking, reuse it
         // This prevents duplicate orders if the user clicks Pay multiple times
         if (booking.razorpayOrderId) {
@@ -70,7 +108,8 @@ export const createPaymentIntent = async (req, res) => {
                         orderId: existingOrder.id,
                         amount: existingOrder.amount,
                         currency: existingOrder.currency,
-                        keyId: process.env.RAZORPAY_KEY_ID
+                        keyId: process.env.RAZORPAY_KEY_ID,
+                        mode: 'razorpay'
                     });
                 }
             } catch (fetchErr) {
@@ -100,7 +139,8 @@ export const createPaymentIntent = async (req, res) => {
             orderId: order.id,
             amount: amountInPaise,
             currency: 'INR',
-            keyId: process.env.RAZORPAY_KEY_ID
+            keyId: process.env.RAZORPAY_KEY_ID,
+            mode: 'razorpay'
         });
 
     } catch (error) {
@@ -180,23 +220,50 @@ export const verifyPayment = async (req, res) => {
             return res.status(400).json({ message: "Amount paid is less than the amount due." });
         }
 
-        booking.paymentStatus = 'paid';
-        booking.razorpayPaymentId = razorpayPaymentId;
-        booking.razorpaySignature = razorpaySignature;
-        booking.amountPaid = payment.amount / 100;
-        await booking.save();
-
-        const refId = booking._id.toString().slice(-6).toUpperCase();
-        await Notification.create({
-            userId: booking.companionId,
-            type: 'payment_completed',
-            message: `Payment received for booking #${refId}.`
-        });
+        await markPaid(booking, { paymentId: razorpayPaymentId, signature: razorpaySignature, amountRupees: payment.amount / 100, mode: 'razorpay' });
 
         res.status(200).json({ message: "Payment verified successfully.", booking });
 
     } catch (error) {
         console.error("Verify Payment Error:", error);
         res.status(500).json({ message: "Failed to verify payment.", error: error.message });
+    }
+};
+
+/**
+ * POST /api/payments/simulate { bookingId, outcome?: 'success' | 'failure' }
+ * Test checkout. Refused unless PAYMENT_MODE=simulated. Same ownership and
+ * state checks as a real payment; 'failure' changes nothing (lets the app
+ * test its failed-payment path).
+ */
+export const simulatePayment = async (req, res) => {
+    try {
+        if (paymentMode() !== 'simulated') {
+            return res.status(403).json({ message: "Simulated payments are turned off on this server." });
+        }
+        const { bookingId, outcome = 'success' } = req.body;
+        const booking = await Booking.findById(bookingId);
+        if (!booking) return res.status(404).json({ message: "Booking not found." });
+        if (booking.requesterId.toString() !== req.user.id.toString()) {
+            return res.status(403).json({ message: "Unauthorized to pay for this booking." });
+        }
+        if (booking.status !== 'accepted') {
+            return res.status(400).json({ message: "Booking must be accepted before payment." });
+        }
+        if (booking.paymentStatus === 'paid') {
+            return res.status(200).json({ message: "Payment already completed.", booking });
+        }
+        if (outcome === 'failure') {
+            return res.status(402).json({ message: "Test payment declined. No money was taken." });
+        }
+        await markPaid(booking, {
+            paymentId: `sim_pay_${Date.now()}`,
+            amountRupees: amountDueInPaise(booking) / 100,
+            mode: 'simulated'
+        });
+        res.status(200).json({ message: "Test payment successful.", booking });
+    } catch (error) {
+        console.error("Simulate Payment Error:", error.message);
+        res.status(500).json({ message: "Failed to complete test payment." });
     }
 };

@@ -27,6 +27,8 @@ const BookingSchema = new mongoose.Schema({
         enum: ['pending', 'paid', 'failed', 'refunded'], 
         default: 'pending' 
     },
+    // 'simulated' = test payment made while PAYMENT_MODE=simulated (no money moved).
+    paymentMode: { type: String, enum: ['razorpay', 'simulated'] },
     razorpayOrderId: { type: String },
     razorpayPaymentId: { type: String },
     razorpaySignature: { type: String },
