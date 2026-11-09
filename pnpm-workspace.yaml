@@ -1,0 +1,4 @@
+allowBuilds:
+  bcrypt: true
+  core-js: false
+  lint: false
