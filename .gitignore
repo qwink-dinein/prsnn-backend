@@ -27,3 +27,7 @@ coverage/
 
 # Local-only ops scripts (DB maintenance, etc.)
 scripts/
+# graphify: keep the graph and report (shared knowledge base), skip caches and the HTML viewer
+graphify-out/*
+!graphify-out/graph.json
+!graphify-out/GRAPH_REPORT.md

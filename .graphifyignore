@@ -1,0 +1,11 @@
+# Code-only map. Skip deps, builds, docs and logs.
+node_modules/
+dist/
+.expo/
+.next/
+graphify-out/
+*.md
+*.log
+*.txt
+public/
+assets/
