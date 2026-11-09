@@ -16,7 +16,7 @@ const SUPPORT = () => process.env.SUPPORT_EMAIL || 'mukarramjahmm@gmail.com';
 const pct = (x) => `${Math.round(x * 100)}%`;
 
 export const POLICY = {
-    fees: 'No booking fee. One price list for every companion: ₹399 for 1 hour, with lower hourly rates for longer bookings. The price shown is the total you pay.',
+    fees: 'No booking fee. One price list for every companion: ₹399 for 1 hour, with lower hourly rates for longer bookings. The price shown is the total you pay, whichever companion accepts — you are never charged more.',
     allocation: `Payment reserves your booking; it is confirmed when an eligible companion accepts. Your chosen companion gets between 15 minutes and 5 hours to respond, depending on how far away your session is. If they can’t make it, we offer your booking to up to ${MAX_OFFERS - 1} similar verified companions, one at a time (same city, your “show me” preference, available for your chosen duration). If nobody accepts at least 1 hour before the session, it is cancelled and fully refunded.`,
     cancellation: [
         `Cancel at least ${CANCELLATION_CUTOFF_MINUTES} minutes before the session starts: ${pct(1 - CANCELLATION_FEE)} refunded (a ${pct(CANCELLATION_FEE)} cancellation fee is kept by prsnn).`,
