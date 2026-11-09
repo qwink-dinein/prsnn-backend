@@ -19,8 +19,12 @@ export const getRazorpay = () => {
     return razorpayClient;
 };
 
-/** Amount owed for a booking, in paise. Single source of truth (app mirrors it). */
+/**
+ * Amount owed for a booking, in paise. Single source of truth (app mirrors it).
+ * New bookings carry the fixed package price; older ones were priced by the hour.
+ */
 export const amountDueInPaise = (booking) => {
+    if (booking.packagePrice) return Math.round(booking.packagePrice * 100);
     const hours = (parseInt(booking.duration, 10) || 60) / 60;
     return Math.round(booking.pricePerHour * hours * 100);
 };

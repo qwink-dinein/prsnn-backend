@@ -97,7 +97,9 @@ const UserSchema = new mongoose.Schema({
 
     // Companion-Specific Fields
     description: String,
-    pricePerHour: Number,
+    pricePerHour: Number, // fixed base rate (₹399) for app companions; kept for the website
+    // Durations (whole hours 1–12) this companion offers at the fixed package prices.
+    packages: { type: [Number], default: undefined },
     startTime: String,
     endTime: String,
     tags: [String],

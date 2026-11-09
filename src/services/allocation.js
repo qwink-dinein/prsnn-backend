@@ -4,6 +4,7 @@ import Notification from '../models/Notification.js';
 import { issueRefund, MAX_REFUND_ATTEMPTS } from '../utils/refunds.js';
 import { notifyWhatsAppLater } from '../utils/whatsappNotify.js';
 import { matchesSeeGender } from '../utils/privacy.js';
+import { companionShareOf, offeredHours } from '../utils/pricing.js';
 
 /**
  * Prepaid booking allocation.
@@ -19,13 +20,28 @@ import { matchesSeeGender } from '../utils/privacy.js';
  */
 
 const minutes = (n) => n * 60 * 1000;
-export const OFFER_TTL_MS = minutes(Number(process.env.OFFER_TTL_MINUTES) || 15);
-export const ALLOCATION_MS = minutes(Number(process.env.ALLOCATION_TIMEOUT_MINUTES) || 120);
+/** Each companion's response window scales with notice, between these bounds (owner: 15 min – 5 h). */
+export const MIN_OFFER_MS = minutes(Number(process.env.OFFER_MIN_MINUTES) || 15);
+export const MAX_OFFER_MS = minutes(Number(process.env.OFFER_MAX_MINUTES) || 300);
+/** Kept for older imports: the shortest window. */
+export const OFFER_TTL_MS = MIN_OFFER_MS;
 export const PAYMENT_TTL_MS = minutes(Number(process.env.PAYMENT_TIMEOUT_MINUTES) || 30);
 /** Allocation must finish this long before the session starts. */
 export const START_BUFFER_MS = minutes(60);
 /** Earliest bookable session: allocation needs time (buffer + 30 minutes). */
 export const MIN_LEAD_MS = START_BUFFER_MS + minutes(30);
+
+/**
+ * Response window per companion: an equal share of the time left before the
+ * allocation deadline (session start − 1 h) across the offers, never shorter
+ * than 15 minutes or longer than 5 hours.
+ *   booked for tonight  → ~15–30 min each
+ *   booked for next week → 5 h each
+ */
+export function offerWindowMs(booking, now = new Date()) {
+    const available = sessionStart(booking).getTime() - START_BUFFER_MS - now.getTime();
+    return Math.min(MAX_OFFER_MS, Math.max(MIN_OFFER_MS, Math.floor(available / MAX_OFFERS)));
+}
 export const MAX_OFFERS = Math.min(Number(process.env.MAX_COMPANION_OFFERS) || 3, 3);
 
 /** India Standard Time; booking times are entered as IST wall-clock. */
@@ -77,17 +93,19 @@ async function hasConflict(companionId, booking) {
 /**
  * Eligible companions for this booking, best first, excluding anyone already
  * offered. Rules: verified companion, not the customer, matches the customer's
- * gender preference, same city, available that day and time, rate at or below
- * what the customer paid, and free at that time. Same area and shared
+ * gender preference, same city, available that day and time, offers the booked
+ * duration (prices are the same for everyone), and free at that time. Same area and shared
  * interests rank higher.
  */
 export async function findCandidates(booking, requester, excludeIds = [], limit = MAX_OFFERS) {
     const exclude = new Set([String(booking.requesterId), ...excludeIds.map(String)]);
     const city = booking.city || requester?.city;
-    const query = { role: 'companion', verificationStatus: 'verified', pricePerHour: { $lte: booking.pricePerHour } };
+    // Same price list for everyone: a backup just has to offer the booked duration.
+    const query = { role: 'companion', verificationStatus: 'verified' };
+    const hours = (parseInt(booking.duration, 10) || 60) / 60;
     if (city) query.city = new RegExp(`^${String(city).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
     const pool = await User.find(query)
-        .select('fullName gender city area tags availability startTime endTime pricePerHour phone phoneNumber')
+        .select('fullName gender city area tags availability startTime endTime pricePerHour packages phone phoneNumber')
         .limit(200)
         .lean();
 
@@ -96,6 +114,7 @@ export async function findCandidates(booking, requester, excludeIds = [], limit 
         .filter((c) => !exclude.has(String(c._id)))
         .filter((c) => matchesSeeGender(requester?.seeGender, c.gender))
         .filter((c) => isAvailableFor(c, booking))
+        .filter((c) => offeredHours(c).includes(hours))
         .map((c) => ({
             c,
             score: (booking.area && c.area && c.area.toLowerCase() === booking.area.toLowerCase() ? 2 : 0) + ((c.tags || []).some((t) => wantTags.has(String(t).toLowerCase())) ? 1 : 0),
@@ -129,8 +148,8 @@ export async function onPrepaidPaid(bookingId, now = new Date()) {
     const booking = await Booking.findById(bookingId);
     if (!booking || booking.flow !== 'prepaid') return null;
 
-    const start = sessionStart(booking).getTime();
-    const deadline = new Date(Math.min(now.getTime() + ALLOCATION_MS, start - START_BUFFER_MS));
+    // Everyone must have answered by 1 hour before the session.
+    const deadline = new Date(sessionStart(booking).getTime() - START_BUFFER_MS);
     const moved = await Booking.findOneAndUpdate(
         { _id: bookingId, 'allocation.state': 'awaiting_payment' },
         { $set: { 'allocation.state': 'offering', 'allocation.deadline': deadline } },
@@ -162,7 +181,7 @@ export async function offerNext(bookingId, now = new Date()) {
     let next = null;
     if (!offered.length && booking.preferredCompanionId) {
         const preferred = await User.findById(booking.preferredCompanionId)
-            .select('role verificationStatus fullName gender availability startTime endTime pricePerHour phone phoneNumber')
+            .select('role verificationStatus fullName gender availability startTime endTime pricePerHour packages phone phoneNumber')
             .lean();
         if (preferred && preferred.role === 'companion' && preferred.verificationStatus === 'verified' && isAvailableFor(preferred, booking) && !(await hasConflict(preferred._id, booking))) {
             next = preferred;
@@ -175,7 +194,7 @@ export async function offerNext(bookingId, now = new Date()) {
     }
     if (!next) return failAllocation(bookingId, 'no_companion_available', now);
 
-    const expiresAt = new Date(Math.min(now.getTime() + OFFER_TTL_MS, booking.allocation.deadline.getTime()));
+    const expiresAt = new Date(Math.min(now.getTime() + offerWindowMs(booking, now), booking.allocation.deadline.getTime()));
     const pushed = await Booking.findOneAndUpdate(
         { _id: bookingId, 'allocation.state': 'offering', offers: { $not: { $elemMatch: { status: 'offered', expiresAt: { $gt: now } } } } },
         { $push: { offers: { companionId: next._id, status: 'offered', offeredAt: now, expiresAt } } },
@@ -184,7 +203,9 @@ export async function offerNext(bookingId, now = new Date()) {
     if (!pushed) return Booking.findById(bookingId); // someone else made the offer first
 
     const mins = Math.round((expiresAt - now) / 60000);
-    await notify(next._id, 'booking_offer', `New paid booking for ${pushed.duration} min. Accept within ${mins} minutes or it goes to someone else.`);
+    const window = mins >= 120 ? `${Math.round(mins / 60)} hours` : `${mins} minutes`;
+    const hrs = (parseInt(pushed.duration, 10) || 60) / 60;
+    await notify(next._id, 'booking_offer', `New paid ${hrs}-hour booking (you earn ₹${companionShareOf(pushed.amountPaid)}). Accept within ${window} or it goes to someone else.`);
     notifyWhatsAppLater('booking_request', next, { booking: pushed, requester, companion: next });
     return pushed;
 }
@@ -196,7 +217,7 @@ export async function offerNext(bookingId, now = new Date()) {
  * @returns {Promise<{ ok: boolean, booking?: object, reason?: string }>}
  */
 export async function acceptOffer(bookingId, companionId, now = new Date()) {
-    const current = await Booking.findById(bookingId).select('scheduledDate startTime duration').lean();
+    const current = await Booking.findById(bookingId).select('scheduledDate startTime duration amountPaid').lean();
     if (!current) return { ok: false, reason: 'not_found' };
     if (await hasConflict(companionId, { ...current, _id: bookingId })) {
         // A live offer for THIS booking is excluded by _id; anything left is a real clash.
@@ -216,6 +237,7 @@ export async function acceptOffer(bookingId, companionId, now = new Date()) {
                 status: 'accepted',
                 'allocation.state': 'assigned',
                 'allocation.assignedAt': now,
+                companionShare: companionShareOf(current.amountPaid),
                 'offers.$[mine].status': 'accepted',
                 'offers.$[mine].respondedAt': now,
             },

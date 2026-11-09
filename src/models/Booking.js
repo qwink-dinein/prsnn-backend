@@ -42,7 +42,12 @@ const BookingSchema = new mongoose.Schema({
     message: { type: String, default: '' },
     pricePerHour: { type: Number, required: true },
     startTime: { type: String, required: true },
-    duration: { type: String, enum: ['30', '60', '90', '120', '180', '240'], required: true },
+    // Minutes. Whole hours 1–12 are the fixed packages; 30/90/180 are older website bookings.
+    duration: { type: String, enum: ['30', '60', '90', '120', '180', '240', '300', '360', '420', '480', '540', '600', '660', '720'], required: true },
+    // Fixed package price in rupees (same for every companion). Absent on older bookings.
+    packagePrice: { type: Number },
+    // Companion's share (80%) once a companion holds the booking; prsnn keeps 20%.
+    companionShare: { type: Number },
     scheduledDate: { type: Date, default: Date.now },
     paymentStatus: {
         type: String,
@@ -77,7 +82,8 @@ const BookingSchema = new mongoose.Schema({
     offers: [OfferSchema],
     refund: {
         status: { type: String, enum: ['none', 'pending', 'processed', 'failed'], default: 'none' },
-        amount: { type: Number, default: 0 },  // rupees
+        amount: { type: Number, default: 0 },  // rupees refunded
+        retained: { type: Number, default: 0 }, // rupees kept as the cancellation fee (15%), if any
         reason: { type: String },
         providerRefundId: { type: String },
         requestedAt: { type: Date },

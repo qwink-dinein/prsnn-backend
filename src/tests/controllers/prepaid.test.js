@@ -29,18 +29,40 @@ beforeEach(() => vi.clearAllMocks());
 
 describe('POST /bookings/prepaid', () => {
   const body = { companionId: 'c1', scheduledDate: future, startTime: '16:00', duration: '120', idempotencyKey: 'key-12345678', acceptTerms: true };
+  const comp = (over = {}) => lean({ role: 'companion', verificationStatus: 'verified', gender: 'woman', pricePerHour: 600, availability: allDays, city: 'Hyderabad', ...over });
 
   it('creates an awaiting-payment booking with the price and the terms', async () => {
     Booking.findOne.mockResolvedValue(null);
-    User.findById.mockReturnValueOnce(lean({ seeGender: 'woman' })).mockReturnValueOnce(lean({ role: 'companion', verificationStatus: 'verified', gender: 'woman', pricePerHour: 600, availability: allDays, city: 'Hyderabad' }));
+    User.findById.mockReturnValueOnce(lean({ seeGender: 'woman' })).mockReturnValueOnce(comp());
     Booking.create.mockImplementation(async (d) => ({ _id: 'b1', ...d }));
     const res = mkRes();
     await createPrepaidBooking({ user: { id: 'u1' }, body }, res);
     expect(res.status).toHaveBeenCalledWith(201);
     const out = res.json.mock.calls[0][0];
-    expect(out.booking).toMatchObject({ flow: 'prepaid', preferredCompanionId: 'c1', allocation: { state: 'awaiting_payment' }, paymentStatus: 'pending' });
-    expect(out.quote).toEqual({ currency: 'INR', amount: 1200, fees: 0, pricePerHour: 600, duration: '120' });
-    expect(out.policy.cancellation[0]).toMatch(/before the session starts: full refund/);
+    // The companion's own ₹600/h is ignored: everyone uses the fixed packages.
+    expect(out.booking).toMatchObject({ flow: 'prepaid', preferredCompanionId: 'c1', allocation: { state: 'awaiting_payment' }, paymentStatus: 'pending', packagePrice: 699, pricePerHour: 399 });
+    expect(out.quote).toMatchObject({ currency: 'INR', amount: 699, fees: 0, hours: 2, effectiveHourly: 350 });
+    expect(out.policy.cancellation[0]).toMatch(/85% refunded/);
+    expect(out.policy.support).toBe('mukarramjahmm@gmail.com');
+  });
+
+  it('only durations the companion offers, inside 07:00–22:00', async () => {
+    Booking.findOne.mockResolvedValue(null);
+    User.findById.mockReturnValueOnce(lean({ seeGender: 'woman' })).mockReturnValueOnce(comp({ packages: [1, 2] }));
+    let res = mkRes();
+    await createPrepaidBooking({ user: { id: 'u1' }, body: { ...body, duration: '240' } }, res);
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json.mock.calls[0][0].message).toMatch(/doesn’t offer 4-hour/);
+
+    User.findById.mockReturnValueOnce(lean({ seeGender: 'woman' })).mockReturnValueOnce(comp({ startTime: '07:00', endTime: '22:00' }));
+    res = mkRes();
+    await createPrepaidBooking({ user: { id: 'u1' }, body: { ...body, startTime: '21:00', duration: '120' } }, res);
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json.mock.calls[0][0].message).toMatch(/10:00 PM/);
+
+    res = mkRes();
+    await createPrepaidBooking({ user: { id: 'u1' }, body: { ...body, duration: '90' } }, res);
+    expect(res.status).toHaveBeenCalledWith(400); // not a package
   });
 
   it('a retry with the same idempotency key returns the same booking (no second booking, no second charge)', async () => {
@@ -58,7 +80,7 @@ describe('POST /bookings/prepaid', () => {
     await createPrepaidBooking({ user: { id: 'u1' }, body: { ...body, acceptTerms: false } }, res);
     expect(res.status).toHaveBeenCalledWith(400);
 
-    User.findById.mockReturnValueOnce(lean({ seeGender: 'woman' })).mockReturnValueOnce(lean({ role: 'companion', verificationStatus: 'verified', gender: 'man', pricePerHour: 500, availability: allDays }));
+    User.findById.mockReturnValueOnce(lean({ seeGender: 'woman' })).mockReturnValueOnce(comp({ gender: 'man' }));
     res = mkRes();
     await createPrepaidBooking({ user: { id: 'u1' }, body }, res);
     expect(res.status).toHaveBeenCalledWith(404);
@@ -92,7 +114,7 @@ describe('Razorpay webhook', () => {
   beforeEach(() => (process.env.RAZORPAY_WEBHOOK_SECRET = secret));
   afterEach(() => delete process.env.RAZORPAY_WEBHOOK_SECRET);
   const sign = (raw) => crypto.createHmac('sha256', secret).update(raw).digest('hex');
-  const event = Buffer.from(JSON.stringify({ event: 'payment.captured', payload: { payment: { entity: { id: 'pay_1', order_id: 'order_1', amount: 120000 } } } }));
+  const event = Buffer.from(JSON.stringify({ event: 'payment.captured', payload: { payment: { entity: { id: 'pay_1', order_id: 'order_1', amount: 69900 } } } }));
 
   it('rejects a bad signature', async () => {
     const res = mkRes();
@@ -101,12 +123,12 @@ describe('Razorpay webhook', () => {
   });
 
   it('marks the booking paid from a signed payment.captured', async () => {
-    Booking.findOne.mockResolvedValueOnce({ _id: 'b1', paymentStatus: 'pending', pricePerHour: 600, duration: '120' });
+    Booking.findOne.mockResolvedValueOnce({ _id: 'b1', paymentStatus: 'pending', pricePerHour: 399, packagePrice: 699, duration: '120' });
     Booking.findOneAndUpdate.mockResolvedValueOnce({ _id: 'b1', flow: 'prepaid' });
     const res = mkRes();
     await razorpayWebhook({ body: event, headers: { 'x-razorpay-signature': sign(event) } }, res);
     expect(res.status).toHaveBeenCalledWith(200);
-    expect(Booking.findOneAndUpdate.mock.calls[0][1].$set).toMatchObject({ paymentStatus: 'paid', razorpayPaymentId: 'pay_1', amountPaid: 1200 });
+    expect(Booking.findOneAndUpdate.mock.calls[0][1].$set).toMatchObject({ paymentStatus: 'paid', razorpayPaymentId: 'pay_1', amountPaid: 699 });
   });
 });
 
@@ -118,24 +140,37 @@ describe('cancellation follows the published policy', () => {
   };
   const paid = (over) => ({ _id: 'b1', flow: 'prepaid', requesterId: 'u1', companionId: 'c1', status: 'accepted', paymentStatus: 'paid', paymentMode: 'simulated', amountPaid: 600, duration: '60', allocation: { state: 'assigned' }, ...soon(5), ...over });
 
-  it('customer before start → cancelled with a full refund', async () => {
+  it('customer 15+ min before the start → 85% refunded, 15% kept', async () => {
     Booking.findOneAndUpdate.mockResolvedValueOnce(paid()).mockResolvedValueOnce(paid({ refund: { status: 'pending' } }));
     Booking.updateOne.mockResolvedValue({});
     Booking.findById.mockResolvedValue(paid({ status: 'cancelled' }));
     const r = await cancelPrepaid(paid(), 'u1');
     expect(r.code).toBe(200);
     expect(Booking.findOneAndUpdate.mock.calls[0][1].$set).toMatchObject({ status: 'cancelled', cancelledBy: 'requester' });
-    expect(Booking.findOneAndUpdate.mock.calls[1][1].$set['refund.amount']).toBe(600); // refund claimed for the full amount
+    expect(Booking.findOneAndUpdate.mock.calls[1][1].$set['refund.amount']).toBe(510); // 85% of ₹600
+    expect(Booking.updateOne).toHaveBeenCalledWith({ _id: 'b1' }, { $set: { 'refund.retained': 90 } });
   });
 
-  it('customer after the start → cancelled, no automatic refund', async () => {
-    const started = paid(soon(-0.5));
-    Booking.findOneAndUpdate.mockResolvedValueOnce(started);
-    Booking.findById.mockResolvedValue({ ...started, status: 'cancelled' });
-    const r = await cancelPrepaid(started, 'u1');
-    expect(r.code).toBe(200);
-    expect(r.refund).toBe('none');
-    expect(r.message).toMatch(/no automatic refund/);
+  it('customer within 15 min of the start, or after it → no refund', async () => {
+    for (const when of [soon(0.2), soon(-0.5)]) {
+      vi.clearAllMocks();
+      const b = paid(when);
+      Booking.findOneAndUpdate.mockResolvedValueOnce(b);
+      Booking.findById.mockResolvedValue({ ...b, status: 'cancelled' });
+      const r = await cancelPrepaid(b, 'u1');
+      expect(r.code).toBe(200);
+      expect(r.refund).toBe('none');
+      expect(r.message).toMatch(/no refund/);
+    }
+  });
+
+  it('companion cancels before the start → customer gets 100%', async () => {
+    Booking.findOneAndUpdate.mockResolvedValueOnce(paid()).mockResolvedValueOnce(paid({ refund: { status: 'pending' } }));
+    Booking.updateOne.mockResolvedValue({});
+    Booking.findById.mockResolvedValue(paid({ status: 'cancelled' }));
+    const r = await cancelPrepaid(paid(), 'c1');
+    expect(Booking.findOneAndUpdate.mock.calls[1][1].$set['refund.amount']).toBe(600);
+    expect(r.refundAmount).toBe(600);
   });
 
   it('a stranger cannot cancel, and closed bookings stay closed', async () => {

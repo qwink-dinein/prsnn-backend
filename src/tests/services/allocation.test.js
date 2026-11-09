@@ -19,7 +19,7 @@ import {
   offerNext,
   onPrepaidPaid,
   sessionStart,
-  OFFER_TTL_MS,
+  offerWindowMs,
 } from '../../services/allocation.js';
 
 const lean = (v) => ({ select: () => lean(v), limit: () => lean(v), lean: async () => v });
@@ -38,7 +38,7 @@ const base = (over = {}) => ({
   paymentStatus: 'paid',
   amountPaid: 600,
   offers: [],
-  allocation: { state: 'offering', deadline: new Date(NOW.getTime() + 2 * 3600e3) },
+  allocation: { state: 'offering', deadline: new Date('2026-11-10T11:30:00.000Z') }, // start − 1 h
   ...over,
 });
 
@@ -74,13 +74,14 @@ describe('onPrepaidPaid', () => {
     const [filter, update] = Booking.findOneAndUpdate.mock.calls[0];
     expect(filter).toEqual({ _id: 'b1', 'allocation.state': 'awaiting_payment' });
     expect(update.$set['allocation.state']).toBe('offering');
-    // Deadline = min(now + 2h, start − 1h) = 12:00 IST
-    expect(update.$set['allocation.deadline'].toISOString()).toBe('2026-11-10T06:30:00.000Z');
+    // Deadline = start − 1 h = 17:00 IST
+    expect(update.$set['allocation.deadline'].toISOString()).toBe('2026-11-10T11:30:00.000Z');
 
     const [pushFilter, push] = Booking.findOneAndUpdate.mock.calls[1];
     expect(pushFilter.offers).toEqual({ $not: { $elemMatch: { status: 'offered', expiresAt: { $gt: NOW } } } }); // one live offer at a time
     expect(push.$push.offers.companionId).toBe('c1');
-    expect(push.$push.offers.expiresAt.getTime()).toBe(NOW.getTime() + OFFER_TTL_MS);
+    // 7 h until the deadline / 3 offers = 2 h 20 min for this companion
+    expect(push.$push.offers.expiresAt.getTime()).toBe(NOW.getTime() + 140 * 60e3);
     expect(notifyWhatsAppLater).toHaveBeenCalledWith('booking_request', expect.objectContaining({ _id: 'c1' }), expect.anything());
   });
 
@@ -132,7 +133,13 @@ describe('declines, backups and failure', () => {
     expect(Booking.findOneAndUpdate.mock.calls[0][1].$push.offers.companionId).toBe('c2');
   });
 
-  it('backups: same city, cheaper or equal rate, matching gender preference, never the chosen companion again', async () => {
+  it('response window scales with notice: never under 15 min, never over 5 h', () => {
+    expect(offerWindowMs(base(), NOW)).toBe(140 * 60e3);
+    expect(offerWindowMs(base({ startTime: '11:40' }), NOW)).toBe(15 * 60e3); // tonight-ish → floor
+    expect(offerWindowMs(base({ scheduledDate: new Date('2026-11-17T00:00:00.000Z') }), NOW)).toBe(300 * 60e3); // next week → cap
+  });
+
+  it('backups: same city, offer the booked duration, matching gender preference, never the chosen companion again', async () => {
     User.find.mockReturnValueOnce(
       lean([
         { _id: 'c1', gender: 'woman', availability: allDays },
@@ -140,11 +147,13 @@ describe('declines, backups and failure', () => {
         { _id: 'c3', gender: 'woman', availability: { monday: true } },
         { _id: 'c4', gender: 'woman', availability: allDays, area: 'Banjara Hills' },
         { _id: 'c5', gender: 'woman', availability: allDays },
+        { _id: 'c6', gender: 'woman', availability: allDays, packages: [4, 6] }, // doesn't offer 1 hour
       ])
     );
     const out = await findCandidates(base({ area: 'Banjara Hills' }), { seeGender: 'woman' }, ['c1'], 2);
     expect(out.map((c) => c._id)).toEqual(['c4', 'c5']); // same area ranks first
-    expect(User.find.mock.calls[0][0]).toMatchObject({ role: 'companion', verificationStatus: 'verified', pricePerHour: { $lte: 600 } });
+    expect(User.find.mock.calls[0][0]).toMatchObject({ role: 'companion', verificationStatus: 'verified' });
+    expect(User.find.mock.calls[0][0].pricePerHour).toBeUndefined(); // one price list for everyone
   });
 
   it('after 3 offers, the booking fails and is fully refunded', async () => {

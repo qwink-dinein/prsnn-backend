@@ -6,6 +6,7 @@ import User from '../models/User.js';
 import Notification from '../models/Notification.js';
 import { notifyWhatsAppLater } from '../utils/whatsappNotify.js';
 import { onPrepaidPaid } from '../services/allocation.js';
+import { companionShareOf } from '../utils/pricing.js';
 
 /**
  * PAYMENT_MODE=simulated turns on a test checkout for the mobile app: no
@@ -58,6 +59,7 @@ export async function markPaid(bookingId, { paymentId, signature, amountRupees, 
         return { booking: after ?? updated, alreadyPaid: false };
     }
 
+    await Booking.updateOne({ _id: updated._id }, { $set: { companionShare: companionShareOf(amountRupees) } });
     const refId = updated._id.toString().slice(-6).toUpperCase();
     await Notification.create({
         userId: updated.companionId,

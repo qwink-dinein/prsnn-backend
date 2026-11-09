@@ -1,6 +1,7 @@
 import User from '../models/User.js';
 import Booking from '../models/Booking.js';
 import { applyLock, escapeRegex, matchesSeeGender } from '../utils/privacy.js';
+import { offeredHours } from '../utils/pricing.js';
 
 /**
  * In-memory cache for the verified-companion listing (unfiltered).
@@ -23,7 +24,7 @@ export const invalidateCompanionsCache = () => {
     companionsCache.clear();
 };
 
-const FIELDS = 'username profilePhotoUrl fullName description pricePerHour city area state tags availability startTime endTime gender profileVisibility';
+const FIELDS = 'username profilePhotoUrl fullName description pricePerHour packages city area state tags availability startTime endTime gender profileVisibility';
 
 /** Public shape used by web and app. Keeps the legacy snake_case keys the website reads. */
 export function toPublicCompanion(f) {
@@ -35,6 +36,7 @@ export function toPublicCompanion(f) {
         fullName: f.fullName,
         description: f.description,
         pricePerHour: f.pricePerHour,
+        packages: offeredHours(f),
         city: f.city,
         area: f.area,
         state: f.state,

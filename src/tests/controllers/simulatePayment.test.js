@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-vi.mock('../../models/Booking.js', () => ({ default: { findById: vi.fn(), findOneAndUpdate: vi.fn() } }));
+vi.mock('../../models/Booking.js', () => ({ default: { findById: vi.fn(), findOneAndUpdate: vi.fn(), updateOne: vi.fn() } }));
 vi.mock('../../models/User.js', () => ({ default: { findById: vi.fn().mockResolvedValue({ fullName: 'Ayesha', phone: '919876543210' }) } }));
 vi.mock('../../models/Notification.js', () => ({ default: { create: vi.fn() } }));
 vi.mock('../../utils/whatsappNotify.js', () => ({ notifyWhatsAppLater: vi.fn() }));

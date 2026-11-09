@@ -7,6 +7,7 @@ import { maskPhoneNumber } from '../utils/maskPhoneNumber.js';
 import { notifyWhatsAppLater } from '../utils/whatsappNotify.js';
 import { applyLock } from '../utils/privacy.js';
 import { cancelPrepaid } from './prepaid.controller.js';
+import { BASE_RATE, packagePriceFor, withinDay } from '../utils/pricing.js';
 
 const PERSON_FIELDS = 'fullName profilePhotoUrl pricePerHour profileVisibility';
 
@@ -108,15 +109,18 @@ export const createBooking = async (req, res) => {
             }
         }
 
-        const pricePerHour = companion.pricePerHour;
-        if (!pricePerHour) {
-            return res.status(400).json({ message: "Companion does not have a price set." });
+        if (!withinDay(startTime, duration || '60')) {
+            return res.status(400).json({ message: "Sessions must start at or after 7:00 AM and finish by 10:00 PM." });
         }
+        // Same price list for every companion; older website durations (30/90 min) fall back to the base rate.
+        const pricePerHour = BASE_RATE;
+        const packagePrice = packagePriceFor(duration || '60');
 
         const newBooking = new Booking({
             requesterId,
             companionId,
-            pricePerHour, 
+            pricePerHour,
+            ...(packagePrice ? { packagePrice } : {}),
             duration: duration || '60',
             message: message || "I would like to request your presence.",
             startTime: startTime,

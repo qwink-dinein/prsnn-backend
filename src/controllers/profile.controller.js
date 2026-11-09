@@ -5,6 +5,7 @@ import DeletedAccount from '../models/DeletedAccount.js';
 import Admin from '../models/Admin.js';
 import { invalidateCompanionsCache } from './fellows.controller.js';
 import { applyIdentity } from '../utils/privacy.js';
+import { BASE_RATE, cleanPackages, DAY_END_MIN, DAY_START_MIN } from '../utils/pricing.js';
 
 export const getProfile = async (req, res) => {
     try {
@@ -220,23 +221,25 @@ export const onboardCompanion = async (req, res) => {
             }
         };
 
-        // Backend Validation for Price
-        const price = Number(pricePerHour);
-        updateData.pricePerHour = price || 0;
-        if (price < 1 || price > 1000) {
-            return res.status(400).json({ message: "Hourly rate must be between ₹1 and ₹1000." });
+        // Fixed pricing: every companion uses the same price list. They choose
+        // which durations they offer (packages); the rate is not theirs to set.
+        updateData.pricePerHour = BASE_RATE;
+        if (req.body.packages !== undefined) {
+            const packages = cleanPackages(req.body.packages);
+            if (typeof packages === 'string') return res.status(400).json({ message: packages });
+            updateData.packages = packages;
         }
 
-        // Backend Validation for Time (09:00 - 21:00)
+        // Sessions run 07:00–22:00.
         const validateTimeBackend = (t) => {
             if (!t) return true; // Let frontend handle required check if empty, or schema default
             const [h, m] = t.split(':').map(Number);
             const tm = h * 60 + m;
-            return tm >= 540 && tm <= 1260;
+            return tm >= DAY_START_MIN && tm <= DAY_END_MIN;
         };
 
         if (!validateTimeBackend(startTime) || !validateTimeBackend(endTime)) {
-            return res.status(400).json({ message: "Availability must be between 9:00 AM and 9:00 PM." });
+            return res.status(400).json({ message: "Availability must be between 7:00 AM and 10:00 PM." });
         }
 
         // Add photo URLs to User schema
@@ -360,12 +363,14 @@ export const updateProfile = async (req, res) => {
         if (updates.area) user.area = updates.area;
         if (updates.description) user.description = updates.description;
         
-        if (updates.pricePerHour) {
-            const price = Number(updates.pricePerHour);
-            if (price < 1 || price > 1000) {
-                return res.status(400).json({ message: "Hourly rate must be between ₹1 and ₹1000." });
+        // Prices are fixed for everyone: a requested pricePerHour is ignored.
+        if (user.role === 'companion') {
+            user.pricePerHour = BASE_RATE;
+            if (updates.packages !== undefined) {
+                const packages = cleanPackages(updates.packages);
+                if (typeof packages === 'string') return res.status(400).json({ message: packages });
+                user.packages = packages;
             }
-            user.pricePerHour = price;
         }
 
         const validateTimeBackend = (t) => {
@@ -375,13 +380,16 @@ export const updateProfile = async (req, res) => {
             return tm >= 540 && tm <= 1260;
         };
 
-        if (updates.startTime) {
-            // Validate time format if needed, simplistic check
-             user.startTime = updates.startTime;
+        const inDay = (t) => {
+            const [h, m] = String(t).split(':').map(Number);
+            const tm = h * 60 + m;
+            return tm >= DAY_START_MIN && tm <= DAY_END_MIN;
+        };
+        if ((updates.startTime && !inDay(updates.startTime)) || (updates.endTime && !inDay(updates.endTime))) {
+            return res.status(400).json({ message: "Availability must be between 7:00 AM and 10:00 PM." });
         }
-        if (updates.endTime) {
-             user.endTime = updates.endTime;
-        }
+        if (updates.startTime) user.startTime = updates.startTime;
+        if (updates.endTime) user.endTime = updates.endTime;
         
         // Handle photos
         const profilePhoto = req.files?.profilePhoto?.[0]?.path; // Companion
