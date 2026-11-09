@@ -1,5 +1,5 @@
 
-import User from "../models/User.js";
+import User, { PRIVATE_USER_FIELDS } from "../models/User.js";
 import Admin from "../models/Admin.js";
 import Booking from "../models/Booking.js";
 import DeletedAccount from "../models/DeletedAccount.js";
@@ -70,7 +70,7 @@ export const getAllAdmins = async (req, res) => {
             return res.status(403).json({ message: "Access denied" });
         }
 
-        const admins = await User.find({ role: 'admin' }).select('-password').sort({ createdAt: -1 });
+        const admins = await User.find({ role: 'admin' }).select(PRIVATE_USER_FIELDS).sort({ createdAt: -1 });
         
         // Map _id to id
         const mapped = admins.map(a => ({
@@ -186,7 +186,7 @@ export const getUnverifiedUsers = async (req, res) => {
               fullName: { $exists: true, $ne: '' }
             }
         ]
-    }).select('-password').sort({ createdAt: -1 });
+    }).select(PRIVATE_USER_FIELDS).sort({ createdAt: -1 });
     
     const mapped = unverifiedUsers.map(u => ({
         id: u._id,
@@ -215,7 +215,7 @@ export const getUserDetails = async (req, res) => {
         const { id } = req.params;
 
         
-        const user = await User.findById(id).select('-password');
+        const user = await User.findById(id).select(PRIVATE_USER_FIELDS);
         
         if (!user) {
             return res.status(404).json({ message: "User not found" });

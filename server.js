@@ -21,6 +21,7 @@ const FEATURE_ENV = [
   'RAZORPAY_KEY_ID', 'RAZORPAY_KEY_SECRET',
   'RESEND_API_KEY', 'EMAIL_FROM',
   'CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET',
+  'WAPLIFY_API_KEY', 'WAPLIFY_TEMPLATE_NAME',
 ];
 
 const missingRequired = REQUIRED_ENV.filter((k) => !process.env[k]);
@@ -32,7 +33,7 @@ if (missingRequired.length) {
 const missingFeature = FEATURE_ENV.filter((k) => !process.env[k]);
 if (missingFeature.length) {
   console.warn(`WARNING: missing environment variable(s): ${missingFeature.join(', ')}. ` +
-               `Payments, email or uploads will fail until these are set.`);
+               `Payments, email, uploads or app phone login will fail until these are set.`);
 }
 
 // Connect to MongoDB and then start server

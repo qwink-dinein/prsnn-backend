@@ -32,7 +32,10 @@ export const login = async (req, res) => {
         return res.status(404).json({ message: "No account found with this email or username" });
     }
 
-    // 2. Verify password
+    // 2. Verify password (phone-OTP accounts from the app have no password)
+    if (!user.password) {
+        return res.status(401).json({ message: "This account uses mobile number login. Log in with OTP in the prsnn app." });
+    }
     const isMatch = await comparePassword(password, user.password);
     if (!isMatch) {
         return res.status(401).json({ message: "Invalid password" });

@@ -1,5 +1,7 @@
 
-import User from '../models/User.js';
+import User, { PRIVATE_USER_FIELDS } from '../models/User.js';
+import Booking from '../models/Booking.js';
+import DeletedAccount from '../models/DeletedAccount.js';
 import Admin from '../models/Admin.js';
 import { invalidateCompanionsCache } from './fellows.controller.js';
 
@@ -7,7 +9,7 @@ export const getProfile = async (req, res) => {
     try {
         const userId = req.user.id;
         
-        const user = await User.findById(userId).select('-password');
+        const user = await User.findById(userId).select(PRIVATE_USER_FIELDS);
         
         if (!user) {
             return res.status(404).json({ message: "Account not found" });
@@ -121,8 +123,10 @@ export const onboardBasic = async (req, res) => {
         user.city = city;
         user.area = area;
         
-        // IMPORTANT: Basic users are automatically verified
-        user.verificationStatus = 'verified'; 
+        // Basic users are automatically verified. Companions are NOT: their status only
+        // changes through onboard-companion + admin review, so this endpoint must not
+        // be a way to skip ID verification.
+        if (user.role === 'user') user.verificationStatus = 'verified';
         
         if (profilePhoto) user.profilePhotoUrl = profilePhoto;
         if (idProofFront) user.idProofFrontUrl = idProofFront;
@@ -396,8 +400,16 @@ export const updateProfile = async (req, res) => {
             if (updates.tags) {
                 let tagsArray = [];
                 if (typeof updates.tags === 'string') {
-                   // Split by comma if it's a comma-separated string
-                   if (updates.tags.includes(',')) {
+                   // A JSON array (what FormData sends) also contains commas, so try JSON first.
+                   const trimmed = updates.tags.trim();
+                   if (trimmed.startsWith('[')) {
+                       try {
+                           const parsed = JSON.parse(trimmed);
+                           tagsArray = Array.isArray(parsed) ? parsed.map(String) : [];
+                       } catch (e) {
+                           tagsArray = [];
+                       }
+                   } else if (updates.tags.includes(',')) {
                        tagsArray = updates.tags.split(',').map(tag => tag.trim()).filter(t => t);
                    } else {
                        // Or try parsing JSON
@@ -438,5 +450,44 @@ export const updateProfile = async (req, res) => {
     } catch (error) {
         console.error("Update Profile error:", error);
         res.status(500).json({ message: "Server error updating profile", details: error.message });
+    }
+};
+
+/**
+ * DELETE /api/profile — the signed-in member deletes their own account.
+ * Open bookings are cancelled, a DeletedAccount audit row is kept, and the
+ * user document (profile, photos URLs, PIN, OTP state) is removed. Bookings
+ * and payment fields stay for accounting and disputes.
+ * Staff accounts are removed by a super admin, not here.
+ */
+export const deleteOwnAccount = async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user) return res.status(404).json({ message: "Account not found" });
+        if (user.role === 'admin' || user.role === 'superadmin') {
+            return res.status(403).json({ message: "Staff accounts are removed by a super admin." });
+        }
+
+        await Booking.updateMany(
+            { $or: [{ requesterId: user._id }, { companionId: user._id }], status: { $in: ['pending', 'accepted'] } },
+            { $set: { status: 'cancelled' } }
+        );
+
+        await DeletedAccount.create({
+            originalUserId: user._id.toString(),
+            username: user.username,
+            email: user.email || (user.phone ? `phone:${user.phone}` : 'none'),
+            role: user.role,
+            deletedBy: user._id,
+            deletionReason: 'Self-service deletion (app)'
+        });
+
+        await User.deleteOne({ _id: user._id });
+        if (user.role === 'companion') invalidateCompanionsCache();
+
+        res.status(200).json({ message: "Your account has been deleted." });
+    } catch (error) {
+        console.error("Delete own account error:", error.message);
+        res.status(500).json({ message: "Could not delete your account. Please contact support." });
     }
 };

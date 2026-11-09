@@ -7,15 +7,28 @@ const UserSchema = new mongoose.Schema({
         type: String,
         required: true
     },
+    // Email + password accounts (web). Phone-OTP accounts (mobile app) may have neither.
     email: {
         type: String,
-        required: true,
         lowercase: true
     },
     password: {
-        type: String,
-        required: true
+        type: String
     },
+
+    // Phone login (mobile app): verified number as digits with country code, e.g. "919876543210".
+    // Separate from profile `phoneNumber`, which is unverified free text from onboarding forms.
+    phone: { type: String },
+    phoneVerified: { type: Boolean, default: false },
+    phoneOtpHash: { type: String },
+    phoneOtpExpires: { type: Date },
+    phoneOtpAttempts: { type: Number, default: 0 },
+    phoneOtpSentAt: { type: Date },
+
+    // 4-digit app PIN (bcrypt), with lockout after repeated failures.
+    pinHash: { type: String },
+    pinFailedAttempts: { type: Number, default: 0 },
+    pinLockedUntil: { type: Date },
     
     // Role & Status
     role: {
@@ -102,10 +115,16 @@ const UserSchema = new mongoose.Schema({
 UserSchema.index({ role: 1, verificationStatus: 1, createdAt: -1 }); // For fetching verified companions efficiently with sort
 UserSchema.index({ city: 1 }); // For city-based filtering
 UserSchema.index({ tags: 1 }); // For tag-based filtering
-UserSchema.index({ email: 1 }, { unique: true }); // Unique index for email
+// Unique only where present: phone-OTP accounts have no email. Requires migratePhoneAuth.js once
+// on existing databases (drops the old non-partial email_1 index, which treats missing as null).
+UserSchema.index({ email: 1 }, { unique: true, partialFilterExpression: { email: { $type: 'string' } } });
+UserSchema.index({ phone: 1 }, { unique: true, partialFilterExpression: { phone: { $type: 'string' } } });
 UserSchema.index({ username: 1 }, { unique: true }); // Unique index for username
 UserSchema.index({ 'availability.monday': 1, 'availability.tuesday': 1, 'availability.wednesday': 1, 'availability.thursday': 1, 'availability.friday': 1, 'availability.saturday': 1, 'availability.sunday': 1 }); // For availability filtering
 UserSchema.index({ createdAt: -1 }); // For sorting by creation date
+
+/** Fields that must never leave the server, even to the account owner. */
+export const PRIVATE_USER_FIELDS = '-password -otp -otpExpires -phoneOtpHash -phoneOtpExpires -phoneOtpAttempts -phoneOtpSentAt -pinHash -pinFailedAttempts -pinLockedUntil';
 
 const User = mongoose.models.User || mongoose.model('User', UserSchema);
 
