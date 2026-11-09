@@ -58,27 +58,36 @@ export const rupeesText = (n) => Number(n).toLocaleString('en-IN', { maximumFrac
  * Body variables for each template, in {{1}}, {{2}}… order. Kept here so the
  * template wording (WHATSAPP_TEMPLATES.md) and the code can be checked together.
  */
+/** Brand shown inside the messages ({{2}}/{{4}}); a variable so templates carry no fixed name. */
+export const brandName = () => process.env.WAPLIFY_BRAND_NAME || 'prsnn';
+
 export const bodyFor = {
+  // Hello {{1}}, you have received a new booking request on {{2}}. Requested by {{3}}, {{4}} date, {{5}} time, {{6}} duration, {{7}} ref
   booking_request: ({ booking, requester, companion }) => [
     firstName(companion),
+    brandName(),
     firstName(requester, 'A member'),
     dateText(booking.scheduledDate),
     timeText(booking.startTime),
     durationText(booking.duration),
     refOf(booking),
   ],
+  // Hello {{1}}, your booking request on {{2}} has been accepted by {{3}}. {{4}} date, {{5}} time, ₹{{6}} amount, {{7}} ref
   booking_accepted: ({ booking, requester, companion, amount }) => [
     firstName(requester),
-    firstName(companion, 'Your companion'),
+    brandName(),
+    firstName(companion, 'your companion'),
     dateText(booking.scheduledDate),
     timeText(booking.startTime),
     rupeesText(amount),
     refOf(booking),
   ],
+  // Hello {{1}}, the payment of ₹{{2}} from {{3}} has been received for your booking on {{4}}. {{5}} date, {{6}} time, {{7}} ref
   payment_received: ({ booking, requester, companion, amount }) => [
     firstName(companion),
-    firstName(requester, 'Your member'),
     rupeesText(amount),
+    firstName(requester, 'your member'),
+    brandName(),
     dateText(booking.scheduledDate),
     timeText(booking.startTime),
     refOf(booking),

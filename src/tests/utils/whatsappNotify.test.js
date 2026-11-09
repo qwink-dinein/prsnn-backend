@@ -19,13 +19,17 @@ afterEach(() => {
 
 describe('template variables', () => {
   it('booking_request → companion: name, member, date, time, length, ref', () => {
-    expect(bodyFor.booking_request({ booking, requester, companion })).toEqual(['Ayesha', 'Karan', 'Sun, 15 Nov', '4:00 PM', '2 hours', 'ABC9F1']);
+    expect(bodyFor.booking_request({ booking, requester, companion })).toEqual(['Ayesha', 'prsnn', 'Karan', 'Sun, 15 Nov', '4:00 PM', '2 hours', 'ABC9F1']);
   });
   it('booking_accepted → member: name, companion, date, time, amount, ref', () => {
-    expect(bodyFor.booking_accepted({ booking, requester, companion, amount: 1200 })).toEqual(['Karan', 'Ayesha', 'Sun, 15 Nov', '4:00 PM', '1,200', 'ABC9F1']);
+    expect(bodyFor.booking_accepted({ booking, requester, companion, amount: 1200 })).toEqual(['Karan', 'prsnn', 'Ayesha', 'Sun, 15 Nov', '4:00 PM', '1,200', 'ABC9F1']);
   });
   it('payment_received → companion: name, member, amount, date, time, ref', () => {
-    expect(bodyFor.payment_received({ booking, requester, companion, amount: 1200 })).toEqual(['Ayesha', 'Karan', '1,200', 'Sun, 15 Nov', '4:00 PM', 'ABC9F1']);
+    expect(bodyFor.payment_received({ booking, requester, companion, amount: 1200 })).toEqual(['Ayesha', '1,200', 'Karan', 'prsnn', 'Sun, 15 Nov', '4:00 PM', 'ABC9F1']);
+  });
+  it('takes the brand from WAPLIFY_BRAND_NAME', () => {
+    process.env.WAPLIFY_BRAND_NAME = 'Prsnn App';
+    expect(bodyFor.booking_request({ booking, requester, companion })[1]).toBe('Prsnn App');
   });
   it('formats times and lengths', () => {
     expect(timeText('09:30')).toBe('9:30 AM');
@@ -46,7 +50,7 @@ describe('notifyWhatsApp', () => {
     const r = await notifyWhatsApp('booking_accepted', requester, { booking, requester, companion, amount: 1200 }, { fetchImpl });
     expect(r).toEqual({ sent: true });
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
-    expect(body).toMatchObject({ template_name: 'prsnn_booking_accepted', contact_phone: '919848022338', body_data: { 1: 'Karan', 2: 'Ayesha', 5: '1,200', 6: 'ABC9F1' } });
+    expect(body).toMatchObject({ template_name: 'prsnn_booking_accepted', contact_phone: '919848022338', body_data: { 1: 'Karan', 2: 'prsnn', 3: 'Ayesha', 6: '1,200', 7: 'ABC9F1' } });
   });
   it('skips quietly when the template is not configured', async () => {
     delete process.env.WAPLIFY_TPL_PAYMENT_RECEIVED;
