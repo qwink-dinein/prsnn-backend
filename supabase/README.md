@@ -33,7 +33,8 @@ Payment mode lives in `private.config` (`payment_mode` = `simulated` | `razorpay
 
 `scripts/e2e-supabase.mjs` in prsnn-mobile signs in five e2e accounts (`e2e-*@prsnn.test`, email +
 password, phones 90000 0000x; the password is not in any repo). One of them (90000 00000) is a
-superadmin through `private.superadmin_phones`. Before real users arrive:
+superadmin through `private.superadmin_phones`. Before each run, reset them with
+`tests/e2e-reset.sql` (touches only the e2e accounts). Before real users arrive:
 
 ```sql
 delete from public.bookings where requester_id in (select id from auth.users where email like 'e2e-%@prsnn.test');
