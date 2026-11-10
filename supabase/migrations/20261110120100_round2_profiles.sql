@@ -41,8 +41,7 @@ begin
   end if;
   return new;
 end $$;
-drop trigger if exists profiles_photo_review on public.profiles;
-create trigger profiles_photo_review before update of photo_path on public.profiles for each row execute function private.photo_review();
+create or replace trigger profiles_photo_review before update of photo_path on public.profiles for each row execute function private.photo_review();
 
 create or replace function private.photo_review_notify() returns trigger language plpgsql security definer set search_path = '' as $$
 begin
@@ -52,8 +51,7 @@ begin
   end if;
   return new;
 end $$;
-drop trigger if exists profiles_photo_review_notify on public.profiles;
-create trigger profiles_photo_review_notify after update of photo_path on public.profiles for each row execute function private.photo_review_notify();
+create or replace trigger profiles_photo_review_notify after update of photo_path on public.profiles for each row execute function private.photo_review_notify();
 
 -- Photos are shown to others only once approved.
 create or replace function private.public_photo(p public.profiles) returns text language sql stable set search_path = '' as $$
@@ -249,7 +247,5 @@ begin
   return jsonb_build_object('message', 'Sent. It’s in their notifications.', 'user', private.admin_user_json(p));
 end $$;
 
-revoke execute on function public.save_profile(jsonb), public.resubmit_for_review(), public.admin_approvals(text), public.admin_approval_counts(),
-  public.admin_decide_profile(uuid, text, text), public.admin_decide_photo(uuid), public.admin_request_changes(uuid, text, text[], text) from public, anon;
 grant execute on function public.save_profile(jsonb), public.resubmit_for_review(), public.admin_approvals(text), public.admin_approval_counts(),
   public.admin_decide_profile(uuid, text, text), public.admin_decide_photo(uuid), public.admin_request_changes(uuid, text, text[], text) to authenticated;

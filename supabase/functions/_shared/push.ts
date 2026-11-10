@@ -1,7 +1,7 @@
 // Expo push API, batches of 100. EXPO_ACCESS_TOKEN only if "enhanced push security" is on.
 export const isExpoToken = (t: unknown): t is string => typeof t === 'string' && /^(ExponentPushToken|ExpoPushToken)\[[^\]]+\]$/.test(t);
 
-export async function sendPush(messages: { to: string; title?: string; body: string; data?: Record<string, unknown> }[]) {
+export async function sendPush(messages: { to: string; title?: string; body: string; data?: Record<string, unknown>; priority?: 'default' | 'high'; channelId?: string }[]) {
   let sent = 0;
   let failed = 0;
   const invalid: string[] = [];

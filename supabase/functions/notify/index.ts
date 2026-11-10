@@ -55,13 +55,17 @@ async function sendWhatsApp(phone: string, template: string, values: string[]) {
 const TITLES: Record<string, string> = {
   booking_offer: 'New paid booking', booking_confirmed: 'Booking confirmed', booking_cancelled: 'Booking cancelled',
   payment_completed: 'Payment received', refund: 'Refund', dispute: 'prsnn support',
+  action_needed: 'Action needed', approval: 'prsnn', panic: '🚨 Panic alert',
 };
 
 Deno.serve(async () => {
   const { data, error } = await db.rpc('claim_notifications');
   if (error) return new Response(JSON.stringify({ error: error.message }), { status: 500 });
   const items = (data ?? []) as Item[];
-  const pushes = items.filter((i) => i.pushToken).map((i) => ({ to: i.pushToken!, title: TITLES[i.type] ?? 'prsnn', body: i.message, data: { type: i.type, notificationId: i.id } }));
+  const pushes = items.filter((i) => i.pushToken).map((i) => ({
+    to: i.pushToken!, title: TITLES[i.type] ?? 'prsnn', body: i.message, data: { type: i.type, notificationId: i.id },
+    ...(i.type === 'panic' ? { priority: 'high' as const, channelId: 'panic' } : {}),
+  }));
   const result = pushes.length ? await sendPush(pushes) : { sent: 0, failed: 0, batches: 0, invalid: [] as string[] };
   if (result.invalid.length) await db.rpc('forget_push_tokens', { tokens: result.invalid });
   let wa = 0;
@@ -73,5 +77,17 @@ Deno.serve(async () => {
       wa++;
     }
   }
-  return new Response(JSON.stringify({ claimed: items.length, pushed: result.sent, whatsapp: wa }), { headers: { 'Content-Type': 'application/json' } });
+  // WhatsApp rows not tied to a notification: panic alerts to every admin number (template WAPLIFY_TPL_PANIC_ALERT).
+  const { data: outbox } = await db.rpc('claim_whatsapp');
+  let alerts = 0;
+  for (const o of (outbox ?? []) as { phone: string; templateEnv: string; body: string[] }[]) {
+    const template = Deno.env.get(o.templateEnv);
+    if (!template) {
+      console.warn(`no template set for ${o.templateEnv}`);
+      continue;
+    }
+    await sendWhatsApp(o.phone, template, o.body);
+    alerts++;
+  }
+  return new Response(JSON.stringify({ claimed: items.length, pushed: result.sent, whatsapp: wa, alerts }), { headers: { 'Content-Type': 'application/json' } });
 });

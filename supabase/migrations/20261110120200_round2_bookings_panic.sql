@@ -27,7 +27,6 @@ create table if not exists public.panic_alerts (
 );
 create index if not exists panic_open on public.panic_alerts (last_sent_at) where resolved_at is null;
 alter table public.panic_alerts enable row level security;
-drop policy if exists "panic read" on public.panic_alerts;
 create policy "panic read" on public.panic_alerts for select to authenticated using (
   (select public.is_staff()) or exists (select 1 from public.bookings x where x.id = booking_id and (x.requester_id = (select auth.uid()) or x.companion_id = (select auth.uid()))));
 alter publication supabase_realtime add table public.panic_alerts;
@@ -265,7 +264,6 @@ create table if not exists public.city_plans (
 );
 create index if not exists city_plans_city on public.city_plans (lower(city)) where active;
 alter table public.city_plans enable row level security;
-drop policy if exists "plans readable" on public.city_plans;
 create policy "plans readable" on public.city_plans for select to anon, authenticated using (active);
 
 create or replace function public.city_plans_for(city_name text) returns jsonb language sql stable security definer set search_path = '' as $$
@@ -332,7 +330,6 @@ create index if not exists localities_state_name on public.localities (state, lo
 create index if not exists localities_pin on public.localities (pincode text_pattern_ops);
 create index if not exists localities_trgm on public.localities using gin (lower(name) extensions.gin_trgm_ops);
 alter table public.localities enable row level security;
-drop policy if exists "localities readable" on public.localities;
 create policy "localities readable" on public.localities for select to anon, authenticated using (true);
 
 -- Areas in a state: matching names or PIN codes; the chosen city's district first.
@@ -350,8 +347,6 @@ create or replace function public.search_localities(state_name text, q text defa
     limit 40) l
 $$;
 
-revoke execute on function public.raise_panic(uuid), public.resolve_panic(uuid, text), public.admin_panics(boolean), public.admin_city_plans(text),
-  public.admin_save_city_plan(jsonb), public.admin_delete_city_plan(uuid) from public, anon;
 grant execute on function public.raise_panic(uuid), public.resolve_panic(uuid, text), public.admin_panics(boolean), public.admin_city_plans(text),
   public.admin_save_city_plan(jsonb), public.admin_delete_city_plan(uuid) to authenticated;
 grant execute on function public.city_plans_for(text), public.search_localities(text, text, text) to anon, authenticated;
