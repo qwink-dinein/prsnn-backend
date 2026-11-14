@@ -5,7 +5,11 @@ export async function sendPush(messages: { to: string; title?: string; body: str
   let sent = 0;
   let failed = 0;
   const invalid: string[] = [];
-  const valid = messages.filter((m) => isExpoToken(m.to));
+  /** ok[i] is true when messages[i] was accepted by Expo. */
+  const ok: boolean[] = messages.map(() => false);
+  const idx = messages.map((m, i) => (isExpoToken(m.to) ? i : -1)).filter((i) => i >= 0);
+  const valid = idx.map((i) => messages[i]);
+  messages.forEach((m) => { if (!isExpoToken(m.to)) invalid.push(m.to); });
   failed += messages.length - valid.length;
   let batches = 0;
   for (let i = 0; i < valid.length; i += 100) {
@@ -24,7 +28,10 @@ export async function sendPush(messages: { to: string; title?: string; body: str
       }
       const tickets = ((await res.json().catch(() => ({}))) as { data?: { status: string; details?: { error?: string } }[] }).data ?? [];
       batch.forEach((m, j) => {
-        if (tickets[j]?.status === 'ok') sent++;
+        if (tickets[j]?.status === 'ok') {
+          sent++;
+          ok[idx[i + j]] = true;
+        }
         else {
           failed++;
           if (tickets[j]?.details?.error === 'DeviceNotRegistered') invalid.push(m.to);
@@ -34,5 +41,5 @@ export async function sendPush(messages: { to: string; title?: string; body: str
       failed += batch.length;
     }
   }
-  return { sent, failed, batches, invalid };
+  return { sent, failed, batches, invalid, ok };
 }

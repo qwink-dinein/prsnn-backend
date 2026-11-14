@@ -10,6 +10,8 @@ const brand = () => Deno.env.get('WAPLIFY_BRAND_NAME') || 'prsnn';
 
 type Item = {
   id: string; type: string; message: string; pushToken: string | null; phone: string | null; name: string;
+  /** Channels already delivered on an earlier attempt (never repeated). */
+  pushDone: boolean; waDone: boolean;
   /** true when the recipient is the member who booked; false for the companion (or anyone else). */
   toRequester: boolean;
   booking: null | { ref: string; date: string; startTime: string; duration: number; amount: number; refund: number; failed: boolean; requester: string; companion: string; place: string };
@@ -45,18 +47,24 @@ function whatsapp(it: Item): { env: string; values: string[] } | null {
   }
 }
 
-async function sendWhatsApp(phone: string, template: string, values: string[]) {
+/** Sends one WhatsApp template. Returns null on success, else the error text (so the row is retried). */
+async function sendWhatsApp(phone: string, template: string, values: string[]): Promise<string | null> {
   const key = Deno.env.get('WAPLIFY_API_KEY');
-  if (!key) return;
+  if (!key) return 'WAPLIFY_API_KEY not set';
   try {
     const res = await fetch('https://server.waplify.io/api/v1/messages/send', {
       method: 'POST',
       headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ template_name: template, contact_phone: phone, contact_name: 'prsnn member', body_data: Object.fromEntries(values.map((v, i) => [String(i + 1), v])) }),
     });
-    if (!res.ok) console.warn(`waplify template ${template} ${res.status} to=…${phone.slice(-4)}`);
+    if (!res.ok) {
+      console.warn(`waplify template ${template} ${res.status} to=…${phone.slice(-4)}`);
+      return `waplify ${res.status}`;
+    }
+    return null;
   } catch {
     console.warn('waplify unreachable');
+    return 'waplify unreachable';
   }
 }
 
@@ -66,36 +74,60 @@ const TITLES: Record<string, string> = {
   action_needed: 'Action needed', approval: 'prsnn', panic: '🚨 Panic alert', session_reminder: 'Your session is today',
 };
 
+// Delivery is confirmed back to the database (report_*): a row is only marked sent once the
+// provider accepted it; anything else is retried (lease 2 min, at most 5 attempts).
 Deno.serve(async () => {
   const { data, error } = await db.rpc('claim_notifications');
   if (error) return new Response(JSON.stringify({ error: error.message }), { status: 500 });
   const items = (data ?? []) as Item[];
-  const pushes = items.filter((i) => i.pushToken).map((i) => ({
+  const report = new Map<string, { id: string; push: boolean; wa: boolean; error?: string }>();
+  for (const it of items) report.set(it.id, { id: it.id, push: it.pushDone || !it.pushToken, wa: it.waDone });
+
+  const toPush = items.filter((i) => i.pushToken && !i.pushDone);
+  const pushes = toPush.map((i) => ({
     to: i.pushToken!, title: TITLES[i.type] ?? 'prsnn', body: i.message, data: { type: i.type, notificationId: i.id },
     ...(i.type === 'panic' ? { priority: 'high' as const, channelId: 'panic' } : {}),
   }));
-  const result = pushes.length ? await sendPush(pushes) : { sent: 0, failed: 0, batches: 0, invalid: [] as string[] };
+  const result = pushes.length ? await sendPush(pushes) : { sent: 0, failed: 0, batches: 0, invalid: [] as string[], ok: [] as boolean[] };
+  toPush.forEach((it, k) => {
+    const r = report.get(it.id)!;
+    // A token Expo says is gone will never work: count it as done so the row can finish.
+    if (result.ok[k] || result.invalid.includes(it.pushToken!)) r.push = true;
+    else r.error = 'push failed';
+  });
   if (result.invalid.length) await db.rpc('forget_push_tokens', { tokens: result.invalid });
+
   let wa = 0;
   for (const it of items) {
+    const r = report.get(it.id)!;
+    if (it.waDone) continue;
     const w = whatsapp(it);
     const template = w ? Deno.env.get(w.env) : null;
-    if (w && template && it.phone) {
-      await sendWhatsApp(it.phone, template, w.values);
+    if (!w || !template || !it.phone) {
+      r.wa = true; // nothing to send on WhatsApp for this one
+      continue;
+    }
+    const err = await sendWhatsApp(it.phone, template, w.values);
+    if (err) r.error = err;
+    else {
+      r.wa = true;
       wa++;
     }
   }
+  if (report.size) await db.rpc('report_notifications', { items: [...report.values()] });
+
   // WhatsApp rows not tied to a notification: panic alerts to every admin number (template WAPLIFY_TPL_PANIC_ALERT).
   const { data: outbox } = await db.rpc('claim_whatsapp');
-  let alerts = 0;
-  for (const o of (outbox ?? []) as { phone: string; templateEnv: string; body: string[] }[]) {
+  const done: { id: number; ok: boolean; error?: string }[] = [];
+  for (const o of (outbox ?? []) as { id: number; phone: string; templateEnv: string; body: string[] }[]) {
     const template = Deno.env.get(o.templateEnv);
     if (!template) {
-      console.warn(`no template set for ${o.templateEnv}`);
+      done.push({ id: o.id, ok: false, error: `no template set for ${o.templateEnv}` });
       continue;
     }
-    await sendWhatsApp(o.phone, template, o.body);
-    alerts++;
+    const err = await sendWhatsApp(o.phone, template, o.body);
+    done.push({ id: o.id, ok: !err, ...(err ? { error: err } : {}) });
   }
-  return new Response(JSON.stringify({ claimed: items.length, pushed: result.sent, whatsapp: wa, alerts }), { headers: { 'Content-Type': 'application/json' } });
+  if (done.length) await db.rpc('report_whatsapp', { items: done });
+  return new Response(JSON.stringify({ claimed: items.length, pushed: result.sent, whatsapp: wa, alerts: done.filter((d) => d.ok).length }), { headers: { 'Content-Type': 'application/json' } });
 });
