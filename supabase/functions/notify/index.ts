@@ -9,7 +9,7 @@ const db = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SE
 const brand = () => Deno.env.get('WAPLIFY_BRAND_NAME') || 'prsnn';
 
 type Item = {
-  id: string; type: string; message: string; pushToken: string | null; phone: string | null; name: string;
+  id: string; claimToken?: string; type: string; message: string; pushToken: string | null; phone: string | null; name: string;
   /** Channels already delivered on an earlier attempt (never repeated). */
   pushDone: boolean; waDone: boolean;
   /** true when the recipient is the member who booked; false for the companion (or anyone else). */
@@ -80,8 +80,9 @@ Deno.serve(async () => {
   const { data, error } = await db.rpc('claim_notifications');
   if (error) return new Response(JSON.stringify({ error: error.message }), { status: 500 });
   const items = (data ?? []) as Item[];
-  const report = new Map<string, { id: string; push: boolean; wa: boolean; error?: string }>();
-  for (const it of items) report.set(it.id, { id: it.id, push: it.pushDone || !it.pushToken, wa: it.waDone });
+  // Each report carries the claim's token: a report for an expired claim is ignored by the database.
+  const report = new Map<string, { id: string; claimToken?: string; push: boolean; wa: boolean; error?: string }>();
+  for (const it of items) report.set(it.id, { id: it.id, claimToken: it.claimToken, push: it.pushDone || !it.pushToken, wa: it.waDone });
 
   const toPush = items.filter((i) => i.pushToken && !i.pushDone);
   const pushes = toPush.map((i) => ({
@@ -118,15 +119,15 @@ Deno.serve(async () => {
 
   // WhatsApp rows not tied to a notification: panic alerts to every admin number (template WAPLIFY_TPL_PANIC_ALERT).
   const { data: outbox } = await db.rpc('claim_whatsapp');
-  const done: { id: number; ok: boolean; error?: string }[] = [];
-  for (const o of (outbox ?? []) as { id: number; phone: string; templateEnv: string; body: string[] }[]) {
+  const done: { id: number; claimToken?: string; ok: boolean; error?: string }[] = [];
+  for (const o of (outbox ?? []) as { id: number; claimToken?: string; phone: string; templateEnv: string; body: string[] }[]) {
     const template = Deno.env.get(o.templateEnv);
     if (!template) {
-      done.push({ id: o.id, ok: false, error: `no template set for ${o.templateEnv}` });
+      done.push({ id: o.id, claimToken: o.claimToken, ok: false, error: `no template set for ${o.templateEnv}` });
       continue;
     }
     const err = await sendWhatsApp(o.phone, template, o.body);
-    done.push({ id: o.id, ok: !err, ...(err ? { error: err } : {}) });
+    done.push({ id: o.id, claimToken: o.claimToken, ok: !err, ...(err ? { error: err } : {}) });
   }
   if (done.length) await db.rpc('report_whatsapp', { items: done });
   return new Response(JSON.stringify({ claimed: items.length, pushed: result.sent, whatsapp: wa, alerts: done.filter((d) => d.ok).length }), { headers: { 'Content-Type': 'application/json' } });

@@ -14,12 +14,13 @@ begin
   out := out || jsonb_build_object('after_read', coalesce(public.unread_counts() -> 'perChat' -> (b.id::text), '0'::jsonb));
   insert into public.notifications (user_id, type, message, booking_id) values (b.requester_id, 'other', 'test', b.id) returning id into nid;
   c := public.claim_notifications();
-  perform public.report_notifications(jsonb_build_array(jsonb_build_object('id', nid, 'push', true, 'wa', false, 'error', 'waplify 500')));
+  -- Reports carry the claim token (round 5).
+  perform public.report_notifications(jsonb_build_array(jsonb_build_object('id', nid, 'claimToken', (select x ->> 'claimToken' from jsonb_array_elements(c) x where x ->> 'id' = nid::text), 'push', true, 'wa', false, 'error', 'waplify 500')));
   select pushed_at is null into ok from public.notifications where id = nid;
   out := out || jsonb_build_object('retried_after_fail', ok);
   c := public.claim_notifications();
   out := out || jsonb_build_object('reclaimed_push_done', (select (x->>'pushDone')::bool from jsonb_array_elements(c) x where x->>'id' = nid::text));
-  perform public.report_notifications(jsonb_build_array(jsonb_build_object('id', nid, 'push', false, 'wa', true)));
+  perform public.report_notifications(jsonb_build_array(jsonb_build_object('id', nid, 'claimToken', (select x ->> 'claimToken' from jsonb_array_elements(c) x where x ->> 'id' = nid::text), 'push', false, 'wa', true)));
   select pushed_at is not null into ok from public.notifications where id = nid;
   out := out || jsonb_build_object('delivered', ok);
   begin update public.bookings set refund_amount = amount_paid + 1 where id = b.id; out := out || '{"refund_guard":false}';
