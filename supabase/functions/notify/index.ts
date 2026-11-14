@@ -10,7 +10,9 @@ const brand = () => Deno.env.get('WAPLIFY_BRAND_NAME') || 'prsnn';
 
 type Item = {
   id: string; type: string; message: string; pushToken: string | null; phone: string | null; name: string;
-  booking: null | { ref: string; date: string; startTime: string; duration: number; amount: number; refund: number; failed: boolean; requester: string; companion: string };
+  /** true when the recipient is the member who booked; false for the companion (or anyone else). */
+  toRequester: boolean;
+  booking: null | { ref: string; date: string; startTime: string; duration: number; amount: number; refund: number; failed: boolean; requester: string; companion: string; place: string };
 };
 
 const dateText = (d: string) => new Intl.DateTimeFormat('en-IN', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }).format(new Date(`${d}T00:00:00Z`));
@@ -21,17 +23,23 @@ const timeText = (t: string) => {
 const durText = (min: number) => `${min / 60} ${min === 60 ? 'hour' : 'hours'}`;
 const rupees = (n: number) => Number(n).toLocaleString('en-IN', { maximumFractionDigits: 2 });
 
-// Template + body variables ({{1}}…) per notification. Same order as the Express backend.
+// Template + body variables ({{1}}…) per notification (WHATSAPP_TEMPLATES.md).
+// Each booking message goes to one side only: the member already knows they booked,
+// and the companion already knows they accepted.
 function whatsapp(it: Item): { env: string; values: string[] } | null {
   const b = it.booking;
   if (!b) return null;
   switch (it.type) {
-    case 'booking_offer': // companion: new paid request
-      return { env: 'WAPLIFY_TPL_BOOKING_REQUEST', values: [it.name || 'there', brand(), b.requester || 'A member', dateText(b.date), timeText(b.startTime), durText(b.duration), b.ref] };
-    case 'booking_confirmed': // member: companion accepted
-      return { env: 'WAPLIFY_TPL_BOOKING_CONFIRMED', values: [it.name || 'there', brand(), b.companion || 'your companion', dateText(b.date), timeText(b.startTime), b.ref] };
-    case 'refund':
-      return b.failed ? { env: 'WAPLIFY_TPL_BOOKING_UNFULFILLED', values: [it.name || 'there', brand(), dateText(b.date), timeText(b.startTime), rupees(b.refund || b.amount), b.ref] } : null;
+    case 'booking_offer': // companion only: new paid request
+      return it.toRequester ? null : { env: 'WAPLIFY_TPL_BOOKING_REQUEST', values: [it.name || 'there', brand(), b.requester || 'A member', dateText(b.date), timeText(b.startTime), durText(b.duration), b.ref] };
+    case 'booking_confirmed': // member only: a companion accepted
+      return it.toRequester ? { env: 'WAPLIFY_TPL_BOOKING_CONFIRMED', values: [it.name || 'there', brand(), b.companion || 'your companion', dateText(b.date), timeText(b.startTime), b.ref] } : null;
+    case 'session_reminder': { // both, at 5 AM on the day
+      const other = it.toRequester ? b.companion || 'your companion' : b.requester || 'your member';
+      return { env: 'WAPLIFY_TPL_SESSION_REMINDER', values: [it.name || 'there', brand(), other, dateText(b.date), timeText(b.startTime), b.place || 'the agreed public place', b.ref] };
+    }
+    case 'refund': // member only
+      return b.failed && it.toRequester ? { env: 'WAPLIFY_TPL_BOOKING_UNFULFILLED', values: [it.name || 'there', brand(), dateText(b.date), timeText(b.startTime), rupees(b.refund || b.amount), b.ref] } : null;
     default:
       return null;
   }
@@ -55,7 +63,7 @@ async function sendWhatsApp(phone: string, template: string, values: string[]) {
 const TITLES: Record<string, string> = {
   booking_offer: 'New paid booking', booking_confirmed: 'Booking confirmed', booking_cancelled: 'Booking cancelled',
   payment_completed: 'Payment received', refund: 'Refund', dispute: 'prsnn support',
-  action_needed: 'Action needed', approval: 'prsnn', panic: '🚨 Panic alert',
+  action_needed: 'Action needed', approval: 'prsnn', panic: '🚨 Panic alert', session_reminder: 'Your session is today',
 };
 
 Deno.serve(async () => {

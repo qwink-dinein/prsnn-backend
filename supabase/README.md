@@ -23,7 +23,7 @@ Every client call is an RPC (`supabase.rpc('…')`) to a security-definer functi
 2. **Auth → Hooks → Send SMS hook**: HTTPS, `https://mhovyhapzhxcmcuelbol.supabase.co/functions/v1/send-sms`. Generate the secret.
 3. **Edge Functions → Secrets**: `SEND_SMS_HOOK_SECRETS` (the hook secret), `WAPLIFY_API_KEY`, `WAPLIFY_TEMPLATE_NAME`,
    optional `WAPLIFY_CODE_KEYS`, `WAPLIFY_BRAND_NAME`, `WAPLIFY_TPL_BOOKING_REQUEST`, `WAPLIFY_TPL_BOOKING_CONFIRMED`,
-   `WAPLIFY_TPL_BOOKING_UNFULFILLED`, `MSG91_AUTH_KEY`, `MSG91_TEMPLATE_ID`, `EXPO_ACCESS_TOKEN`.
+   `WAPLIFY_TPL_BOOKING_UNFULFILLED`, `WAPLIFY_TPL_SESSION_REMINDER`, `WAPLIFY_TPL_PANIC_ALERT` (templates: prsnn-mobile/WHATSAPP_TEMPLATES.md), `MSG91_AUTH_KEY`, `MSG91_TEMPLATE_ID`, `EXPO_ACCESS_TOKEN`.
 4. **SQL editor**: your superadmin numbers (10 digits): `insert into private.superadmin_phones values ('98XXXXXXXX');`
 5. Test logins for reviewers: **Auth → Providers → Phone → Test phone numbers** (`919000000009=123456`).
 
