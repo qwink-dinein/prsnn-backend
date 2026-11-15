@@ -18,6 +18,7 @@ begin
     availability = '{"monday":true,"tuesday":true,"wednesday":true,"thursday":true,"friday":true,"saturday":true,"sunday":true}'
   where id = c;
 
+  insert into public.consents (user_id, kind, version) select u, k, 'test' from unnest(array[c, m]) u, unnest(array['house_rules', 'companion_terms']) k;
   set local role authenticated;
   perform set_config(claims, json_build_object('sub', m, 'role', 'authenticated')::text, true);
   r := public.create_prepaid_booking(jsonb_build_object('companionId', c, 'scheduledDate', day::text, 'startTime', '12:00', 'duration', '120',
@@ -49,6 +50,10 @@ begin
   insert into public.messages (booking_id, sender_id, content) values (bid, m, 'Call me on 9848012345');
   select content not like '%9848012345%' into ok from public.messages where booking_id = bid order by created_at desc limit 1;
   out := out || jsonb_build_object('chat_open_numbers_hidden', ok);
+  execute 'reset role';
+  select count(*) = 1 into ok from public.consents where booking_id = bid and kind = 'booking_terms' and accepted_at is not null;
+  execute 'set local role authenticated';
+  out := out || jsonb_build_object('booking_terms_logged_with_time', ok);
   select count(*) > 0 into ok from public.notifications where user_id = m and type = 'booking_confirmed' and created_at > now() - interval '1 minute';
   out := out || jsonb_build_object('member_told_confirmed', ok);
 

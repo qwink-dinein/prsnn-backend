@@ -11,6 +11,8 @@ create temp table t_b (k text, bid uuid);
 grant all on t_out, t_ids, t_b to authenticated; grant usage on sequence t_out_n_seq to authenticated;
 delete from public.bookings where requester_id in (select m from t_ids) or companion_id in (select c from t_ids);
 update public.profiles set role='companion', verification_status='verified', approval_status='draft', photo_status='none', photo_path=null, categories='{}' where id=(select c from t_ids);
+-- House rules and companion terms agreed (required since the consent log).
+insert into public.consents (user_id, kind, version) select u, k, 'test' from t_ids, unnest(array[c, m]) u, unnest(array['house_rules', 'companion_terms']) k;
 set local role authenticated;
 select set_config('request.jwt.claims', json_build_object('sub',(select c from t_ids),'role','authenticated')::text, true);
 do $$ begin perform public.submit_companion_application(jsonb_build_object('fullName','Ananya Rao','photoPath',(select c from t_ids)::text||'/p.png')); exception when others then insert into t_out(step,val) values ('no categories', sqlerrm); end $$;
