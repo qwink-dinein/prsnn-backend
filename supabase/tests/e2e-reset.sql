@@ -10,3 +10,4 @@ update public.profiles set role = 'companion', verification_status = 'not_submit
 update public.profiles set role = 'user', push_token = null where id = (select id from auth.users where email = 'e2e-sub@prsnn.test');
 update public.profiles set push_token = null where id in (select id from auth.users where email like 'e2e-member%@prsnn.test');
 delete from private.pending_subadmins where phone = '9000000001';
+delete from public.enquiries where source = 'e2e';
