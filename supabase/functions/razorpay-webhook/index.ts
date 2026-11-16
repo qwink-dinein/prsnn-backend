@@ -12,7 +12,7 @@ Deno.serve(async (req) => {
   if (!(await validWebhookSignature(raw, req.headers.get('x-razorpay-signature')))) return json({ error: 'Bad signature.' }, 401);
   const ev = JSON.parse(raw) as { event: string; payload: Record<string, { entity: Record<string, unknown> }> };
   const pay = ev.payload?.payment?.entity as { id?: string; order_id?: string; amount?: number } | undefined;
-  const refund = ev.payload?.refund?.entity as { id?: string; notes?: { bookingId?: string }; error_description?: string } | undefined;
+  const refund = ev.payload?.refund?.entity as { id?: string; notes?: { bookingId?: string; kind?: string; paymentId?: string }; error_description?: string } | undefined;
   try {
     switch (ev.event) {
       case 'payment.captured':
@@ -22,7 +22,9 @@ Deno.serve(async (req) => {
         if (pay?.order_id) await db.rpc('pay_failed', { order_id: pay.order_id });
         break;
       case 'refund.processed':
-        if (refund?.notes?.bookingId) await db.rpc('refunds_report', { bid: refund.notes.bookingId, token: null, ok: true, provider_id: refund.id ?? null, err: null });
+        // A second payment's refund must not mark the booking itself refunded.
+        if (refund?.notes?.kind === 'duplicate' && refund.notes.paymentId) await db.rpc('extra_refunds_report', { pid: refund.notes.paymentId, token: null, ok: true, provider_id: refund.id ?? null, err: null });
+        else if (refund?.notes?.bookingId) await db.rpc('refunds_report', { bid: refund.notes.bookingId, token: null, ok: true, provider_id: refund.id ?? null, err: null });
         break;
       case 'refund.failed':
         if (refund?.id) await db.rpc('refunds_failed_by_provider', { provider_id: refund.id, err: refund.error_description ?? 'Refund failed at the bank' });

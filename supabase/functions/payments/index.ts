@@ -29,13 +29,16 @@ Deno.serve(async (req) => {
     if (body.action === 'order') {
       const { data: p, error } = await db.rpc('pay_prepare', { bid: bookingId, uid });
       if (error) return json({ error: error.message }, 400);
+      // One order per booking: opening checkout again reuses it, so an earlier attempt that completes
+      // late still matches the booking (every order is also remembered in private.payment_orders).
+      if (p.orderId) return json({ mode: 'razorpay', keyId: keyId(), orderId: p.orderId, amount: p.amountPaise, currency: 'INR' });
       const order = await rzp<Order>('POST', '/orders', {
         amount: p.amountPaise,
         currency: 'INR',
         receipt: `prsnn_${p.ref}_${Date.now().toString(36)}`.slice(0, 40),
         notes: { bookingId, ref: p.ref },
       });
-      await db.rpc('pay_set_order', { bid: bookingId, order_id: order.id });
+      await db.rpc('pay_set_order', { bid: bookingId, order_id: order.id, amount_paise: order.amount });
       return json({ mode: 'razorpay', keyId: keyId(), orderId: order.id, amount: order.amount, currency: order.currency });
     }
 
