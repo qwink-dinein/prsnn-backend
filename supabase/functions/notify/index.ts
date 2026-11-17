@@ -34,8 +34,13 @@ function whatsapp(it: Item): { env: string; values: string[] } | null {
   switch (it.type) {
     case 'booking_offer': // companion only: new paid request
       return it.toRequester ? null : { env: 'WAPLIFY_TPL_BOOKING_REQUEST', values: [it.name || 'there', brand(), b.requester || 'A member', dateText(b.date), timeText(b.startTime), durText(b.duration), b.ref] };
-    case 'booking_confirmed': // member only: a companion accepted
-      return it.toRequester ? { env: 'WAPLIFY_TPL_BOOKING_CONFIRMED', values: [it.name || 'there', brand(), b.companion || 'your companion', dateText(b.date), timeText(b.startTime), b.ref] } : null;
+    case 'booking_confirmed':
+      // Member: a companion accepted. Companion: only sent when they didn't tap Accept themselves
+      // (their ID was just approved and the held booking went through, or support assigned it),
+      // so they need telling that the booking is confirmed and chat is open.
+      return it.toRequester
+        ? { env: 'WAPLIFY_TPL_BOOKING_CONFIRMED', values: [it.name || 'there', brand(), b.companion || 'your companion', dateText(b.date), timeText(b.startTime), b.ref] }
+        : { env: 'WAPLIFY_TPL_PAYMENT_RECEIVED', values: [it.name || 'there', rupees(b.amount), b.requester || 'your member', brand(), dateText(b.date), timeText(b.startTime), b.ref] };
     case 'session_reminder': { // both, at 5 AM on the day
       const other = it.toRequester ? b.companion || 'your companion' : b.requester || 'your member';
       return { env: 'WAPLIFY_TPL_SESSION_REMINDER', values: [it.name || 'there', brand(), other, dateText(b.date), timeText(b.startTime), b.place || 'the agreed public place', b.ref] };
