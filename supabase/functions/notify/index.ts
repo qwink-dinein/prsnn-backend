@@ -47,7 +47,9 @@ function whatsapp(it: Item): { env: string; values: string[] } | null {
   }
 }
 
-/** Sends one WhatsApp template. Returns null on success, else the error text (so the row is retried). */
+/** Sends one WhatsApp template. Returns null on success, else the error text (so the row is retried).
+ *  Waplify can answer HTTP 200 with status "error" (template not approved, wrong variable count…), so only
+ *  status "success" counts, the same check as the login-code hook. */
 async function sendWhatsApp(phone: string, template: string, values: string[]): Promise<string | null> {
   const key = Deno.env.get('WAPLIFY_API_KEY');
   if (!key) return 'WAPLIFY_API_KEY not set';
@@ -57,11 +59,14 @@ async function sendWhatsApp(phone: string, template: string, values: string[]): 
       headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ template_name: template, contact_phone: phone, contact_name: 'prsnn member', body_data: Object.fromEntries(values.map((v, i) => [String(i + 1), v])) }),
     });
-    if (!res.ok) {
-      console.warn(`waplify template ${template} ${res.status} to=…${phone.slice(-4)}`);
-      return `waplify ${res.status}`;
+    const out = await res.json().catch(() => ({} as Record<string, unknown>));
+    if (res.ok && out.status === 'success') {
+      console.log(`waplify sent ${template} to=…${phone.slice(-4)}`);
+      return null;
     }
-    return null;
+    const why = String(out.error ?? out.message ?? out.status ?? '').slice(0, 200);
+    console.warn(`waplify failed ${template} ${res.status} ${why} to=…${phone.slice(-4)}`);
+    return `waplify ${res.status} ${why}`.trim();
   } catch {
     console.warn('waplify unreachable');
     return 'waplify unreachable';
@@ -105,6 +110,9 @@ Deno.serve(async () => {
     const w = whatsapp(it);
     const template = w ? Deno.env.get(w.env) : null;
     if (!w || !template || !it.phone) {
+      // Say why a message that should go on WhatsApp didn't, instead of skipping it silently.
+      if (w && !template) console.warn(`whatsapp skipped ${it.type}: secret ${w.env} is not set`);
+      else if (w && !it.phone) console.warn(`whatsapp skipped ${it.type}: no phone on the profile`);
       r.wa = true; // nothing to send on WhatsApp for this one
       continue;
     }
