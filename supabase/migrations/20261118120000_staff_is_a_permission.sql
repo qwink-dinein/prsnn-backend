@@ -1,4 +1,4 @@
--- STATUS: NOT APPLIED YET (18 Nov). Waiting for the owner to approve it in Supabase, just before the new APK is installed.
+-- STATUS: applied 18 Nov (owner approved).
 -- Staff is a permission, not a kind of account (owner, 18 Nov).
 -- Before: profiles.role was ONE of user | companion | subadmin | superadmin, so making a companion a sub-admin
 -- wiped their companion side, and removing an admin turned them into a plain member.
